@@ -28,13 +28,18 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Allow GET → returns mocked path for quick UI testing without audio
+// GET = "Use demo case (Maria)" — return the canonical Maria case directly.
+// Bypasses STT entirely (passing an empty audio file to Groq throws).
 export async function GET() {
-  const stt = await transcribe(new File([], "empty.webm"));
-  const ex = await extractFacts(stt.transcript);
-  return NextResponse.json({
-    transcript: stt.transcript,
-    facts: ex.facts,
-    mocked: { transcribe: stt.mocked, extract: ex.mocked },
-  });
+  try {
+    const { MARIA, MARIA_TRANSCRIPT } = await import("@/lib/demo-case");
+    return NextResponse.json({
+      transcript: MARIA_TRANSCRIPT,
+      facts: MARIA,
+      mocked: { transcribe: true, extract: true },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }
