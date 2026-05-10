@@ -8,6 +8,7 @@ import type { JudgeResult } from "@/lib/judge";
 
 type Stage = "idle" | "recording" | "transcribing" | "ready" | "error";
 type Tab = "packet" | "opposing" | "judge";
+type IntakeMode = "voice" | "decree" | "demo";
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("idle");
@@ -19,12 +20,15 @@ export default function Home() {
   const [judge, setJudge] = useState<JudgeResult | null>(null);
   const [tab, setTab] = useState<Tab>("packet");
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
+  const [intakeMode, setIntakeMode] = useState<IntakeMode>("demo");
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const decreeInputRef = useRef<HTMLInputElement | null>(null);
 
   async function startRecording() {
     setError(null);
+    setIntakeMode("voice");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
@@ -69,6 +73,7 @@ export default function Home() {
   }
 
   async function useDemoCase() {
+    setIntakeMode("demo");
     setStage("transcribing");
     try {
       const res = await fetch("/api/intake");
@@ -78,6 +83,29 @@ export default function Home() {
       setStage("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "intake failed");
+      setStage("error");
+    }
+  }
+
+  function pickDecreeFile() {
+    setError(null);
+    decreeInputRef.current?.click();
+  }
+
+  async function uploadDecree(file: File) {
+    setIntakeMode("decree");
+    setStage("transcribing");
+    const fd = new FormData();
+    fd.append("decree", file);
+    try {
+      const res = await fetch("/api/decree", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "decree upload failed");
+      setTranscript(json.transcript);
+      setFacts(json.facts);
+      setStage("ready");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "decree upload failed");
       setStage("error");
     }
   }
@@ -124,11 +152,25 @@ export default function Home() {
       <Header />
 
       <section className="flex-1 w-full max-w-6xl mx-auto px-6 py-8">
-        {stage === "idle" && <IdleHero onRecord={startRecording} onDemo={useDemoCase} />}
+        <input
+          ref={decreeInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) uploadDecree(f);
+            e.currentTarget.value = "";
+          }}
+        />
+
+        {stage === "idle" && (
+          <IdleHero onRecord={startRecording} onUpload={pickDecreeFile} onDemo={useDemoCase} />
+        )}
 
         {stage === "recording" && <Recording onStop={stopRecording} />}
 
-        {stage === "transcribing" && <Transcribing />}
+        {stage === "transcribing" && <Transcribing mode={intakeMode} />}
 
         {stage === "error" && <ErrorBox error={error} onRetry={reset} />}
 
@@ -189,37 +231,52 @@ function Footer() {
 // Stages
 // ─────────────────────────────────────────────────────────────────────
 
-function IdleHero({ onRecord, onDemo }: { onRecord: () => void; onDemo: () => void }) {
+function IdleHero({
+  onRecord,
+  onUpload,
+  onDemo,
+}: {
+  onRecord: () => void;
+  onUpload: () => void;
+  onDemo: () => void;
+}) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 items-center py-12">
       <div className="space-y-5">
         <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
-          Step 1 · Tell us what's going on
+          Step 1 · Show us your court order
         </p>
         <h2 className="font-serif text-4xl sm:text-5xl font-bold leading-tight">
           When the system already has tools to help you, you shouldn't need a $400/hour lawyer to find them.
         </h2>
         <p className="text-lg text-muted max-w-prose">
-          Record a 60-second voice note describing your child-support or maintenance situation in
-          Cook County. We'll triage it, draft the right court papers, and rehearse you for what
-          opposing counsel and the judge will say.
+          Snap a photo of your divorce judgment or support order — or describe the situation in your
+          own voice. We'll extract the facts, draft the right Cook County court packet, and rehearse
+          you for what opposing counsel and the judge will say.
         </p>
         <div className="flex flex-wrap gap-3 pt-2">
           <button
-            onClick={onRecord}
+            onClick={onUpload}
             className="rounded-full bg-terracotta hover:bg-terracotta-dark text-paper px-6 py-3 font-medium shadow"
           >
-            ● Start voice intake
+            📎 Upload decree photo
+          </button>
+          <button
+            onClick={onRecord}
+            className="rounded-full border border-terracotta/50 text-terracotta hover:bg-terracotta/10 px-6 py-3 font-medium"
+          >
+            ● Voice intake
           </button>
           <button
             onClick={onDemo}
-            className="rounded-full border border-terracotta/50 text-terracotta hover:bg-terracotta/10 px-6 py-3 font-medium"
+            className="rounded-full border border-rule text-muted hover:bg-paper px-6 py-3 font-medium"
           >
             Use demo case (Maria)
           </button>
         </div>
         <p className="text-xs text-muted pt-1">
-          Mic permission required. You can also click "Use demo case" to skip the recording.
+          Photo upload uses Claude vision to read your order. Voice intake uses Groq Whisper. No
+          account, no upload of personal data beyond your session.
         </p>
       </div>
 
@@ -284,12 +341,18 @@ function Recording({ onStop }: { onStop: () => void }) {
   );
 }
 
-function Transcribing() {
+function Transcribing({ mode }: { mode: IntakeMode }) {
+  const labels: Record<IntakeMode, { title: string; sub: string }> = {
+    voice: { title: "Transcribing & extracting facts…", sub: "Groq Whisper → Claude Haiku" },
+    decree: { title: "Reading your court order…", sub: "Claude Sonnet vision" },
+    demo: { title: "Loading demo case…", sub: "Maria · Cook County" },
+  };
+  const { title, sub } = labels[mode];
   return (
     <div className="flex flex-col items-center justify-center py-24 gap-4">
       <div className="w-12 h-12 rounded-full border-4 border-terracotta border-t-transparent animate-spin" />
-      <p className="font-serif text-xl">Transcribing & extracting facts…</p>
-      <p className="text-muted text-sm">Whisper → Claude Haiku</p>
+      <p className="font-serif text-xl">{title}</p>
+      <p className="text-muted text-sm">{sub}</p>
     </div>
   );
 }

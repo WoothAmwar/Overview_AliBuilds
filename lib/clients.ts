@@ -4,6 +4,7 @@ import OpenAI from "openai";
 
 let _anthropic: Anthropic | null = null;
 let _openai: OpenAI | null = null;
+let _groq: OpenAI | null = null;
 
 export function anthropic(): Anthropic | null {
   if (!process.env.ANTHROPIC_API_KEY) return null;
@@ -17,10 +18,24 @@ export function openai(): OpenAI | null {
   return _openai;
 }
 
+// Groq exposes an OpenAI-compatible endpoint, so we reuse the OpenAI SDK with a different baseURL.
+// Free tier hosts Whisper-large-v3 at sub-second latency.
+export function groq(): OpenAI | null {
+  if (!process.env.GROQ_API_KEY) return null;
+  if (!_groq) {
+    _groq = new OpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+    });
+  }
+  return _groq;
+}
+
 export const MODELS = {
   haiku: "claude-haiku-4-5-20251001",
   sonnet: "claude-sonnet-4-6",
-  whisper: "whisper-1",
+  whisperOpenAI: "whisper-1",
+  whisperGroq: "whisper-large-v3",
 } as const;
 
 export function extractJson<T = unknown>(text: string): T {
