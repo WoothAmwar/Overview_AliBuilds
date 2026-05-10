@@ -11,6 +11,7 @@ export type InterviewTurn = {
   facts: Facts;
   complete: boolean;
   mocked: boolean;
+  suggestions?: string[];
 };
 
 const INTERVIEW_SYSTEM = `You are a warm, focused legal-aid intake assistant helping a self-represented person in Cook County, Illinois fill in the missing facts of their Petition for Rule to Show Cause case.
@@ -36,8 +37,16 @@ ALWAYS return strict JSON only — no markdown fences, no preamble:
 {
   "reply": "<your conversational message back to the user>",
   "facts": { <complete updated Facts object — every original field, with merged updates> },
-  "complete": <true|false>
+  "complete": <true|false>,
+  "suggestions": <optional string[] — see rule below>
 }
+
+OPTIONAL "suggestions" rule:
+- ONLY include "suggestions" when your question genuinely has a small, well-bounded set of likely answers (date-shortcuts, yes/no, common amounts).
+- Examples of GOOD suggestions: ["About 12 months", "About 18 months", "More than 24 months", "I'm not sure"] for arrears; ["Last week", "Last month", "More than 6 months ago", "Never"] for last payment.
+- Examples of when to OMIT suggestions: open-ended fields like full name, address, email, case number — let the user type/speak freely.
+- Keep suggestions to 3–4 chips, each under 25 chars.
+- Omit the field entirely (don't pass an empty array) when not applicable.
 
 Rules:
 - Use the EXACT same key names as the input facts. Don't drop fields you don't update — pass them through.
@@ -84,8 +93,14 @@ export async function interviewTurn(
     .map((b) => (b as { type: "text"; text: string }).text)
     .join("");
 
-  const parsed = extractJson<{ reply: string; facts: Facts; complete: boolean }>(text);
-  return { reply: parsed.reply, facts: parsed.facts, complete: parsed.complete, mocked: false };
+  const parsed = extractJson<{ reply: string; facts: Facts; complete: boolean; suggestions?: string[] }>(text);
+  return {
+    reply: parsed.reply,
+    facts: parsed.facts,
+    complete: parsed.complete,
+    mocked: false,
+    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 4) : undefined,
+  };
 }
 
 // Generate the opening question with no user message yet — used to greet the user
@@ -108,7 +123,7 @@ export async function interviewOpener(facts: Facts): Promise<InterviewTurn> {
     messages: [
       {
         role: "user",
-        content: `CURRENT FACTS:\n${JSON.stringify(facts, null, 2)}\n\nUSER MESSAGE:\n[The user just opened the interview tab — there is no message yet. Greet them in one sentence and ask the first priority question.]`,
+        content: `CURRENT FACTS:\n${JSON.stringify(facts, null, 2)}\n\nUSER MESSAGE:\n[The user just opened the interview tab — there is no message yet. Greet them in one sentence and ask the first priority bundled question.]`,
       },
     ],
   });
@@ -116,6 +131,12 @@ export async function interviewOpener(facts: Facts): Promise<InterviewTurn> {
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; text: string }).text)
     .join("");
-  const parsed = extractJson<{ reply: string; facts: Facts; complete: boolean }>(text);
-  return { reply: parsed.reply, facts: parsed.facts, complete: parsed.complete, mocked: false };
+  const parsed = extractJson<{ reply: string; facts: Facts; complete: boolean; suggestions?: string[] }>(text);
+  return {
+    reply: parsed.reply,
+    facts: parsed.facts,
+    complete: parsed.complete,
+    mocked: false,
+    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 4) : undefined,
+  };
 }

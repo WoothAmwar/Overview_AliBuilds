@@ -9,6 +9,15 @@ import { buildRoadmap, type Roadmap } from "@/lib/roadmap";
 import type { ChatMsg } from "@/lib/interview";
 import type { TrackDecision } from "@/lib/router";
 import { generatePetitionPdf, generateDemandLetterPdf, downloadBlob } from "@/lib/pdf";
+import {
+  type FactSources,
+  type FactSource,
+  sourcesFromFacts,
+  mergeSourcesAfterInterview,
+  SOURCE_LABELS,
+  SOURCE_TONE,
+  verifiableValues,
+} from "@/lib/sources";
 
 type Stage = "idle" | "recording" | "transcribing" | "ready" | "error";
 type Tab = "interview" | "roadmap" | "packet" | "opposing" | "judge";
@@ -26,6 +35,7 @@ export default function Home() {
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [intakeMode, setIntakeMode] = useState<IntakeMode>("demo");
   const [routeDecision, setRouteDecision] = useState<TrackDecision | null>(null);
+  const [factSources, setFactSources] = useState<FactSources>({});
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
@@ -70,6 +80,7 @@ export default function Home() {
       if (!res.ok) throw new Error(json.error || "intake failed");
       setTranscript(json.transcript);
       setFacts(json.facts);
+      setFactSources(sourcesFromFacts(json.facts, "voice"));
       setStage("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "intake failed");
@@ -85,6 +96,7 @@ export default function Home() {
       const json = await res.json();
       setTranscript(json.transcript);
       setFacts(json.facts);
+      setFactSources(sourcesFromFacts(json.facts, "decree"));
       setStage("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "intake failed");
@@ -108,6 +120,7 @@ export default function Home() {
       if (!res.ok) throw new Error(json.error || "decree upload failed");
       setTranscript(json.transcript);
       setFacts(json.facts);
+      setFactSources(sourcesFromFacts(json.facts, "decree"));
       setStage("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "decree upload failed");
@@ -152,13 +165,19 @@ export default function Home() {
     setOpposing(null);
     setJudge(null);
     setRouteDecision(null);
+    setFactSources({});
     setTab("interview");
   }
 
   // Called by the chat after each turn — updates facts and invalidates any
   // LLM-generated downstream artifacts so they regenerate against the new facts.
   function applyInterviewUpdate(nextFacts: Facts) {
-    setFacts(nextFacts);
+    setFacts((prevFacts) => {
+      if (prevFacts) {
+        setFactSources((prevSources) => mergeSourcesAfterInterview(prevSources, prevFacts, nextFacts));
+      }
+      return nextFacts;
+    });
     setMotion(null);
     setOpposing(null);
     setJudge(null);
@@ -221,6 +240,7 @@ export default function Home() {
               setTab={loadTab}
               loadingTab={loadingTab}
               facts={facts}
+              factSources={factSources}
               onFactsUpdate={applyInterviewUpdate}
               routeDecision={routeDecision}
               motion={motion}
@@ -436,6 +456,7 @@ function ResultPanel({
   setTab,
   loadingTab,
   facts,
+  factSources,
   onFactsUpdate,
   routeDecision,
   motion,
@@ -446,6 +467,7 @@ function ResultPanel({
   setTab: (t: Tab) => void;
   loadingTab: Tab | null;
   facts: Facts;
+  factSources: FactSources;
   onFactsUpdate: (f: Facts) => void;
   routeDecision: TrackDecision | null;
   motion: Motion | null;
@@ -485,12 +507,14 @@ function ResultPanel({
         {tab === "roadmap" && (
           <RoadmapView
             roadmap={roadmap}
+            facts={facts}
+            factSources={factSources}
             routeDecision={routeDecision}
             onContinueInterview={() => setTab("interview")}
           />
         )}
         {loadingTab === tab && tab !== "roadmap" && tab !== "interview" && <PanelLoading label={tabLabel(tab)} />}
-        {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} facts={facts} /> : <Empty kind="packet" />)}
+        {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} facts={facts} factSources={factSources} /> : <Empty kind="packet" />)}
         {loadingTab !== tab && tab === "opposing" &&
           (opposing ? <OpposingView opposing={opposing} /> : <Empty kind="opposing" />)}
         {loadingTab !== tab && tab === "judge" &&
@@ -552,13 +576,32 @@ function Empty({ kind }: { kind: Tab }) {
 
 function RoadmapView({
   roadmap,
+  facts,
+  factSources,
   routeDecision,
   onContinueInterview,
 }: {
   roadmap: Roadmap;
+  facts: Facts;
+  factSources: FactSources;
   routeDecision: TrackDecision | null;
   onContinueInterview: () => void;
 }) {
+  // Map field labels in the status rows to Facts keys, so we can render the
+  // source chip next to each completed row.
+  const fieldKeyByLabel: Record<string, keyof Facts> = {
+    "Court (county / division)": "county",
+    "Case number": "case_number",
+    "Order type": "order_type",
+    "Monthly obligation": "monthly_amount_owed_usd",
+    "Petitioner full name + address": "petitioner_name",
+    "Respondent full name + last known address": "respondent_name",
+    "Date of original judgment / order": "judgment_date",
+    "Date of last full payment": "last_payment_date",
+    "Arrears total": "estimated_arrears_months",
+  };
+  // Avoid TS unused-warning on facts (used through fieldKeyByLabel below).
+  void facts;
   const { status, nextSteps, evidence } = roadmap;
   const sections: { key: keyof typeof status; title: string; rows: typeof status.petition }[] = [
     { key: "petition", title: "Petition for Rule to Show Cause", rows: status.petition },
@@ -570,6 +613,9 @@ function RoadmapView({
     <div className="space-y-8">
       {/* ── Track routing badge (Featherless sponsor integration) ───────── */}
       {routeDecision && <TrackBadge decision={routeDecision} />}
+
+      {/* ── Provenance legend ───────────────────────────────────── */}
+      <SourceLegend />
 
       {/* ── Section 1: Draft packet status ─────────────────────── */}
       <div>
@@ -609,18 +655,25 @@ function RoadmapView({
               </summary>
               <div className="px-3 pb-3">
                 <ul className="text-xs space-y-1.5">
-                  {sec.rows.map((r, i) => (
-                    <li key={i} className="flex gap-2 items-start">
-                      <span className={r.complete ? "text-sage" : "text-terracotta-dark"}>
-                        {r.complete ? "✓" : "◯"}
-                      </span>
-                      <div className="flex-1">
-                        <span className="font-medium">{r.label}</span>
-                        {r.value && <span className="text-muted"> · {r.value}</span>}
-                        {r.note && <div className="text-muted italic text-[11px]">{r.note}</div>}
-                      </div>
-                    </li>
-                  ))}
+                  {sec.rows.map((r, i) => {
+                    const factKey = fieldKeyByLabel[r.label];
+                    const src = factKey ? factSources[factKey] : undefined;
+                    return (
+                      <li key={i} className="flex gap-2 items-start">
+                        <span className={r.complete ? "text-sage" : "text-terracotta-dark"}>
+                          {r.complete ? "✓" : "◯"}
+                        </span>
+                        <div className="flex-1">
+                          <div className="flex items-baseline gap-2 flex-wrap">
+                            <span className="font-medium">{r.label}</span>
+                            {r.complete && <SourceChip src={src} />}
+                          </div>
+                          {r.value && <span className="text-muted"> · {r.value}</span>}
+                          {r.note && <div className="text-muted italic text-[11px]">{r.note}</div>}
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </details>
@@ -672,6 +725,42 @@ function RoadmapView({
         filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
       </p>
     </div>
+  );
+}
+
+function SourceLegend() {
+  return (
+    <div className="flex items-center gap-2 text-[11px] text-muted bg-background border border-rule/40 rounded-md px-3 py-1.5 flex-wrap">
+      <span className="font-medium">Every fact is colored by source:</span>
+      <span className={`px-1.5 py-0.5 rounded border ${SOURCE_TONE.decree}`}>
+        from your decree
+      </span>
+      <span className={`px-1.5 py-0.5 rounded border ${SOURCE_TONE.interview}`}>
+        you confirmed
+      </span>
+      <span className={`px-1.5 py-0.5 rounded border ${SOURCE_TONE.derived}`}>
+        derived
+      </span>
+      <span className="italic">— nothing invented.</span>
+    </div>
+  );
+}
+
+function SourceChip({ src }: { src: FactSource | undefined }) {
+  if (!src) return null;
+  const labelShort: Record<FactSource, string> = {
+    decree: "📄 decree",
+    voice: "🎙 voice",
+    interview: "💬 you",
+    derived: "∑ derived",
+  };
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded border ${SOURCE_TONE[src]} whitespace-nowrap`}
+      title={SOURCE_LABELS[src]}
+    >
+      {labelShort[src]}
+    </span>
   );
 }
 
@@ -857,6 +946,7 @@ function ChatView({
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [ttsOn, setTtsOn] = useState(true);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chatRecorderRef = useRef<MediaRecorder | null>(null);
   const chatChunksRef = useRef<BlobPart[]>([]);
@@ -932,6 +1022,7 @@ function ChatView({
         setHistory([{ role: "assistant", content: json.reply }]);
         if (json.facts) onFactsUpdate(json.facts);
         setComplete(!!json.complete);
+        setSuggestions(Array.isArray(json.suggestions) ? json.suggestions : []);
       } catch (e) {
         if (!cancelled) setChatError(e instanceof Error ? e.message : "opener failed");
       } finally {
@@ -955,6 +1046,7 @@ function ChatView({
     if (!msg || sending) return;
     setChatError(null);
     if (!messageOverride) setInput("");
+    setSuggestions([]); // clear chips immediately on send
     const newHistory: ChatMsg[] = [...history, { role: "user", content: msg }];
     setHistory(newHistory);
     setSending(true);
@@ -969,11 +1061,29 @@ function ChatView({
       setHistory((h) => [...h, { role: "assistant", content: json.reply }]);
       if (json.facts) onFactsUpdate(json.facts);
       setComplete(!!json.complete);
+      setSuggestions(Array.isArray(json.suggestions) ? json.suggestions : []);
     } catch (e) {
       setChatError(e instanceof Error ? e.message : "turn failed");
     } finally {
       setSending(false);
     }
+  }
+
+  // Replay TTS for a specific message (per-message 🔊 button).
+  function replayMessage(text: string) {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.05;
+    u.pitch = 1.0;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred =
+      voices.find((v) => v.name === "Samantha") ||
+      voices.find((v) => v.lang.startsWith("en-US") && /female|samantha|victoria|allison/i.test(v.name)) ||
+      voices.find((v) => v.lang.startsWith("en-US")) ||
+      voices.find((v) => v.lang.startsWith("en"));
+    if (preferred) u.voice = preferred;
+    window.speechSynthesis.speak(u);
   }
   // Keep the ref in sync so MediaRecorder's onstop closure can call the latest send.
   sendRef.current = send;
@@ -1060,19 +1170,52 @@ function ChatView({
             JusticeLink is reading your case…
           </div>
         )}
-        {history.map((m, i) => (
-          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div
-              className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                m.role === "user"
-                  ? "bg-terracotta text-paper"
-                  : "bg-paper border border-rule/50 text-foreground"
-              }`}
-            >
-              {m.content}
+        {history.map((m, i) => {
+          const isLatestAssistant =
+            m.role === "assistant" && i === history.length - 1 && !sending;
+          return (
+            <div key={i}>
+              <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap relative group ${
+                    m.role === "user"
+                      ? "bg-terracotta text-paper"
+                      : "bg-paper border border-rule/50 text-foreground"
+                  }`}
+                >
+                  {m.content}
+                  {m.role === "assistant" && (
+                    <button
+                      type="button"
+                      onClick={() => replayMessage(m.content)}
+                      title="Replay this message"
+                      className="ml-1 text-[11px] text-muted hover:text-terracotta opacity-60 hover:opacity-100 transition-opacity"
+                    >
+                      🔊
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Quick-reply chips below the latest assistant message */}
+              {isLatestAssistant && suggestions.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2 ml-1">
+                  {suggestions.map((s, j) => (
+                    <button
+                      key={j}
+                      type="button"
+                      onClick={() => send(s)}
+                      disabled={sending || transcribing}
+                      className="text-xs rounded-full border border-terracotta/40 bg-terracotta/5 hover:bg-terracotta/15 text-terracotta-dark px-3 py-1 transition-colors disabled:opacity-40"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
         {sending && (
           <div className="flex justify-start">
             <div className="bg-paper border border-rule/50 rounded-lg px-3 py-2 text-sm text-muted flex items-center gap-2">
@@ -1167,7 +1310,46 @@ function PanelLoading({ label }: { label: string }) {
   );
 }
 
-function PacketView({ motion, facts }: { motion: Motion; facts: Facts }) {
+function HighlightedText({ text, terms }: { text: string; terms: string[] }) {
+  if (!terms.length) return <>{text}</>;
+  // Build a single regex that matches any of the terms (case-insensitive, longest-first).
+  const escaped = terms
+    .filter((t) => t && t.length > 2)
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!escaped.length) return <>{text}</>;
+  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+  const parts = text.split(re);
+  return (
+    <>
+      {parts.map((p, i) => {
+        const isMatch = escaped.some((e) => new RegExp(`^${e}$`, "i").test(p));
+        return isMatch ? (
+          <mark
+            key={i}
+            className="bg-sage/20 text-foreground rounded px-0.5 border-b border-sage/50"
+            title="Verified — this came from your decree"
+          >
+            {p}
+          </mark>
+        ) : (
+          <span key={i}>{p}</span>
+        );
+      })}
+    </>
+  );
+}
+
+function PacketView({
+  motion,
+  facts,
+  factSources,
+}: {
+  motion: Motion;
+  facts: Facts;
+  factSources: FactSources;
+}) {
+  const verifiable = useMemo(() => verifiableValues(facts, factSources), [facts, factSources]);
   const [downloading, setDownloading] = useState<"petition" | "demand" | null>(null);
   async function handleDownload(kind: "petition" | "demand") {
     setDownloading(kind);
@@ -1206,12 +1388,20 @@ function PacketView({ motion, facts }: { motion: Motion; facts: Facts }) {
         </button>
       </div>
 
+      {/* Hallucination-guard explainer */}
+      <div className="text-[11px] text-muted bg-background border border-rule/40 rounded-md px-3 py-1.5 flex items-center gap-2 flex-wrap">
+        <span>
+          <mark className="bg-sage/20 px-0.5 rounded">Highlighted spans</mark> are verbatim from your
+          uploaded decree — verifiable, not invented.
+        </span>
+      </div>
+
       <div>
         <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-2">
           Petition caption
         </p>
         <pre className="font-serif text-xs whitespace-pre-wrap bg-background border border-rule/50 rounded p-3">
-          {motion.petition_caption}
+          <HighlightedText text={motion.petition_caption} terms={verifiable} />
         </pre>
       </div>
       <div>
@@ -1219,7 +1409,7 @@ function PacketView({ motion, facts }: { motion: Motion; facts: Facts }) {
           Petition body (excerpt)
         </p>
         <div className="text-sm leading-relaxed whitespace-pre-wrap bg-background border border-rule/50 rounded p-3 max-h-72 overflow-auto">
-          {motion.petition_body}
+          <HighlightedText text={motion.petition_body} terms={verifiable} />
         </div>
       </div>
       <div>
@@ -1227,7 +1417,7 @@ function PacketView({ motion, facts }: { motion: Motion; facts: Facts }) {
           13.3.1 demand letter
         </p>
         <div className="text-sm leading-relaxed whitespace-pre-wrap bg-background border border-rule/50 rounded p-3 max-h-48 overflow-auto">
-          {motion.demand_letter}
+          <HighlightedText text={motion.demand_letter} terms={verifiable} />
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
