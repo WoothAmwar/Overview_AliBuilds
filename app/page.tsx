@@ -1,1504 +1,1639 @@
 "use client";
 
-import { useState, useRef, useMemo, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { generatePetitionPdf, generateDemandLetterPdf, downloadBlob } from "@/lib/pdf";
 import type { Facts } from "@/lib/demo-case";
 import type { Motion } from "@/lib/motion";
-import type { OpposingResult } from "@/lib/opposing";
-import type { JudgeResult } from "@/lib/judge";
-import { buildRoadmap, type Roadmap } from "@/lib/roadmap";
-import type { ChatMsg } from "@/lib/interview";
 import type { TrackDecision } from "@/lib/router";
-import { generatePetitionPdf, generateDemandLetterPdf, downloadBlob } from "@/lib/pdf";
-import {
-  type FactSources,
-  type FactSource,
-  sourcesFromFacts,
-  mergeSourcesAfterInterview,
-  SOURCE_LABELS,
-  SOURCE_TONE,
-  verifiableValues,
-} from "@/lib/sources";
 
-type Stage = "idle" | "recording" | "transcribing" | "ready" | "error";
-type Tab = "interview" | "roadmap" | "packet" | "opposing" | "judge";
-type IntakeMode = "voice" | "decree" | "demo";
+/* =========================================================================
+   JUSTICE IN A FLASH — Illinois / Cook County
+   Hackathon MVP: upload decree -> real Claude vision -> conversational
+   interview -> Sonnet-drafted Petition + Featherless track routing +
+   3-panel output (Draft Packet Status / Evidence Checklist / Next Steps)
+   ========================================================================= */
 
+// ---- LOGO --------------------------------------------------------------
+const Logo = ({ size = 28 }: { size?: number }) =>
+  React.createElement(
+    "svg",
+    { width: size, height: size, viewBox: "0 0 32 32", fill: "none", "aria-label": "Justice in a Flash logo" },
+    [
+      React.createElement("rect", { key: "r", x: 1, y: 1, width: 30, height: 30, rx: 8, stroke: "currentColor", strokeWidth: 1.5 }),
+      React.createElement("path", { key: "p", d: "M9 11h14M9 16h10M9 21h7", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" }),
+      React.createElement("circle", { key: "c", cx: 24, cy: 21, r: 2.2, fill: "currentColor" }),
+    ],
+  );
+
+// ---- ICONS -------------------------------------------------------------
+const Icon = ({ d, size = 18, className = "" }: { d: string; size?: number; className?: string }) =>
+  React.createElement(
+    "svg",
+    {
+      width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", className,
+    },
+    React.createElement("path", { d }),
+  );
+
+const ICONS = {
+  upload: "M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2",
+  mic: "M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10a7 7 0 11-14 0M12 19v4",
+  check: "M5 12l5 5L20 7",
+  arrowRight: "M5 12h14m0 0l-6-6m6 6l-6 6",
+  arrowLeft: "M19 12H5m0 0l6-6m-6 6l6 6",
+  doc: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zM14 2v6h6",
+  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  sparkle: "M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8",
+  download: "M12 3v12m0 0l-4-4m4 4l4-4M5 21h14",
+  copy: "M9 3h10a2 2 0 012 2v10M5 7h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V9a2 2 0 012-2z",
+  alert: "M12 9v4m0 4h.01M10.3 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z",
+  calendar: "M3 9h18M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zM16 3v4M8 3v4",
+  speak: "M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10a7 7 0 11-14 0",
+};
+
+// ---- DEMO JUDGMENT (Maria Lopez v. Carlos Lopez) -----------------------
+const DEMO_JUDGMENT = {
+  fileName: "Judgment_for_Dissolution_Lopez.pdf",
+  pages: 4,
+  size: "274 KB",
+  excerptParagraphs: [
+    {
+      num: 4,
+      title: "Annual Income Disclosure Requirement",
+      body:
+        "Beginning with tax year 2022 and continuing each year thereafter while maintenance or child support remains subject to recalculation, modification, or enforcement, each party shall provide to the other party complete annual proof of income no later than April 30 of the following year. The required annual proof of income shall include: complete federal income tax returns, all Forms W-2 and 1099, the last four payroll statements, documentation of bonuses or commissions, and (if self-employed) business profit and loss statements.",
+      highlight: ["April 30", "tax returns", "W-2", "1099", "payroll"],
+    },
+    {
+      num: 5,
+      title: "Maintenance Recalculation Cooperation",
+      body:
+        "If requested in writing by the other party, Respondent shall provide updated income information sufficient to evaluate maintenance recalculation and any related child support recalculation within 21 days after the written request.",
+      highlight: ["maintenance recalculation", "within 21 days", "written request"],
+    },
+    {
+      num: 10,
+      title: "Enforcement",
+      body:
+        "Failure to provide the required annual proof of income, tax filings, payroll records, or other ordered financial documents may be raised in a post-judgment enforcement proceeding, including a Petition for Rule to Show Cause.",
+      highlight: ["Petition for Rule to Show Cause", "enforcement"],
+    },
+    {
+      num: 11,
+      title: "Retained Jurisdiction",
+      body:
+        "The Court retains jurisdiction over this cause for purposes of enforcement, disclosure, maintenance review, support recalculation, and all other provisions of this Judgment.",
+      highlight: ["retains jurisdiction", "enforcement"],
+    },
+  ],
+  extracted: {
+    orderType: "Judgment for Dissolution of Marriage",
+    court: "Circuit Court of Cook County, Illinois — Domestic Relations Division",
+    caseNumber: "2022-D-001234",
+    calendar: "14",
+    judge: "Hon. R. Whitfield",
+    courtroom: "3007",
+    petitioner: "Maria Lopez",
+    respondent: "Carlos Lopez",
+    finalOrderDate: "2022-06-15",
+    maintenance: "$1,450.00 / month",
+    childSupport: "$1,180.00 / month",
+    orderParagraph: "4 and 5",
+    orderRequirement:
+      "Carlos must provide complete annual proof of income (federal & state tax returns, W-2s/1099s, last 4 payroll statements, bonus/commission documentation) by April 30 each year; and must respond to written requests for updated income information within 21 days.",
+    enforcementHook:
+      "Paragraph 10 expressly contemplates a Petition for Rule to Show Cause for failure to provide ordered financial documents.",
+  },
+};
+
+// ---- TYPES & STATE -----------------------------------------------------
+type AppState = {
+  case: { role: string; caseType: string; caseNumber: string; calendar: string; ivdNumber: string; filingDate: string; isComplete: boolean | null; finalOrderDate: string; enforcedOrderDate: string };
+  client: { firstName: string; middleName: string; lastName: string; suffix: string; address1: string; address2: string; city: string; state: string; zip: string; phone: string; email: string };
+  otherParty: { firstName: string; middleName: string; lastName: string; suffix: string; hasLawyer: boolean | null; lawyerName: string; deliveryTarget: string; address1: string; address2: string; city: string; state: string; zip: string; email: string };
+  petition: { orderParagraph: string; orderRequirement: string; violationDescription: string; violationDates: string[]; requestedRelief: string };
+  documents: { orderUploaded: boolean; exhibitAReady: boolean; supportingProofUploaded: boolean; writtenRequestsUploaded: boolean; paymentHistoryUploaded: boolean };
+  // ── Real-AI extras layered on top of the original schema ──
+  uploadedFile: File | null;
+  isDemo: boolean;
+  realFacts: Facts | null;
+  realMotion: Motion | null;
+  trackDecision: TrackDecision | null;
+};
+
+const blankState = (): AppState => ({
+  case: { role: "", caseType: "Support", caseNumber: "", calendar: "", ivdNumber: "", filingDate: "", isComplete: null, finalOrderDate: "", enforcedOrderDate: "" },
+  client: { firstName: "", middleName: "", lastName: "", suffix: "", address1: "", address2: "", city: "", state: "Illinois", zip: "", phone: "", email: "" },
+  otherParty: { firstName: "", middleName: "", lastName: "", suffix: "", hasLawyer: null, lawyerName: "", deliveryTarget: "party", address1: "", address2: "", city: "", state: "Illinois", zip: "", email: "" },
+  petition: { orderParagraph: "", orderRequirement: "", violationDescription: "", violationDates: [], requestedRelief: "" },
+  documents: { orderUploaded: false, exhibitAReady: false, supportingProofUploaded: false, writtenRequestsUploaded: false, paymentHistoryUploaded: false },
+  uploadedFile: null,
+  isDemo: false,
+  realFacts: null,
+  realMotion: null,
+  trackDecision: null,
+});
+
+type Stage = "landing" | "upload" | "extract" | "review" | "interview" | "output";
+
+// ============================================================ APP ROOT
 export default function Home() {
-  const [stage, setStage] = useState<Stage>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<string>("");
-  const [facts, setFacts] = useState<Facts | null>(null);
-  const [motion, setMotion] = useState<Motion | null>(null);
-  const [opposing, setOpposing] = useState<OpposingResult | null>(null);
-  const [judge, setJudge] = useState<JudgeResult | null>(null);
-  const [tab, setTab] = useState<Tab>("interview");
-  const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
-  const [intakeMode, setIntakeMode] = useState<IntakeMode>("demo");
-  const [routeDecision, setRouteDecision] = useState<TrackDecision | null>(null);
-  const [factSources, setFactSources] = useState<FactSources>({});
+  const [stage, setStage] = useState<Stage>("landing");
+  const [state, setState] = useState<AppState>(blankState());
 
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
-  const decreeInputRef = useRef<HTMLInputElement | null>(null);
-
-  async function startRecording() {
-    setError(null);
-    setIntakeMode("voice");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      chunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      recorder.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, { type: mimeType || "audio/webm" });
-        sendAudio(blob);
-      };
-      recorder.start();
-      recorderRef.current = recorder;
-      setStage("recording");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "mic permission denied");
-      setStage("error");
-    }
-  }
-
-  function stopRecording() {
-    recorderRef.current?.stop();
-    setStage("transcribing");
-  }
-
-  async function sendAudio(blob: Blob) {
-    const fd = new FormData();
-    fd.append("audio", new File([blob], "intake.webm", { type: blob.type }));
-    try {
-      const res = await fetch("/api/intake", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "intake failed");
-      setTranscript(json.transcript);
-      setFacts(json.facts);
-      setFactSources(sourcesFromFacts(json.facts, "voice"));
-      setStage("ready");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "intake failed");
-      setStage("error");
-    }
-  }
-
-  async function useDemoCase() {
-    setIntakeMode("demo");
-    setStage("transcribing");
-    try {
-      const res = await fetch("/api/intake");
-      const json = await res.json();
-      setTranscript(json.transcript);
-      setFacts(json.facts);
-      setFactSources(sourcesFromFacts(json.facts, "decree"));
-      setStage("ready");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "intake failed");
-      setStage("error");
-    }
-  }
-
-  function pickDecreeFile() {
-    setError(null);
-    decreeInputRef.current?.click();
-  }
-
-  async function uploadDecree(file: File) {
-    setIntakeMode("decree");
-    setStage("transcribing");
-    const fd = new FormData();
-    fd.append("decree", file);
-    try {
-      const res = await fetch("/api/decree", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "decree upload failed");
-      setTranscript(json.transcript);
-      setFacts(json.facts);
-      setFactSources(sourcesFromFacts(json.facts, "decree"));
-      setStage("ready");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "decree upload failed");
-      setStage("error");
-    }
-  }
-
-  async function loadTab(t: Tab) {
-    setTab(t);
-    if (!facts) return;
-    if (t === "roadmap") return; // derived client-side, no fetch
-    if (t === "interview") return; // chat manages its own fetches
-    if (t === "packet" && motion) return;
-    if (t === "opposing" && opposing) return;
-    if (t === "judge" && judge) return;
-    setLoadingTab(t);
-    try {
-      const path = t === "packet" ? "/api/packet" : t === "opposing" ? "/api/opposing" : "/api/judge";
-      const res = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ facts }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || `${t} failed`);
-      if (t === "packet") setMotion(json.motion);
-      if (t === "opposing") setOpposing(json.result);
-      if (t === "judge") setJudge(json.result);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : `${t} failed`);
-    } finally {
-      setLoadingTab(null);
-    }
-  }
-
-  function reset() {
-    setStage("idle");
-    setError(null);
-    setTranscript("");
-    setFacts(null);
-    setMotion(null);
-    setOpposing(null);
-    setJudge(null);
-    setRouteDecision(null);
-    setFactSources({});
-    setTab("interview");
-  }
-
-  // Called by the chat after each turn — updates facts and invalidates any
-  // LLM-generated downstream artifacts so they regenerate against the new facts.
-  function applyInterviewUpdate(nextFacts: Facts) {
-    setFacts((prevFacts) => {
-      if (prevFacts) {
-        setFactSources((prevSources) => mergeSourcesAfterInterview(prevSources, prevFacts, nextFacts));
-      }
-      return nextFacts;
-    });
-    setMotion(null);
-    setOpposing(null);
-    setJudge(null);
-  }
-
-  // Fire the Featherless track-routing call once facts are available.
-  // Re-fires if order_type / issue / case_status change (the routing-relevant fields).
-  useEffect(() => {
-    if (!facts) return;
-    const ctrl = new AbortController();
-    (async () => {
-      try {
-        const res = await fetch("/api/route", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ facts }),
-          signal: ctrl.signal,
-        });
-        const json = (await res.json()) as TrackDecision | { error: string };
-        if (!ctrl.signal.aborted && "track" in json) setRouteDecision(json);
-      } catch {
-        /* silent — track badge just won't render */
-      }
-    })();
-    return () => ctrl.abort();
-  }, [facts?.order_type, facts?.issue, facts?.case_status]);
-
-  return (
-    <main className="flex flex-col flex-1 min-h-screen">
-      <Header />
-
-      <section className="flex-1 w-full max-w-6xl mx-auto px-6 py-8">
-        <input
-          ref={decreeInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf,.png,.jpg,.jpeg,.webp,.gif"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) uploadDecree(f);
-            e.currentTarget.value = "";
-          }}
-        />
-
-        {stage === "idle" && (
-          <IdleHero onRecord={startRecording} onUpload={pickDecreeFile} onDemo={useDemoCase} />
-        )}
-
-        {stage === "recording" && <Recording onStop={stopRecording} />}
-
-        {stage === "transcribing" && <Transcribing mode={intakeMode} />}
-
-        {stage === "error" && <ErrorBox error={error} onRetry={reset} />}
-
-        {stage === "ready" && facts && (
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-6">
-            <IntakePanel transcript={transcript} facts={facts} onReset={reset} />
-            <ResultPanel
-              tab={tab}
-              setTab={loadTab}
-              loadingTab={loadingTab}
-              facts={facts}
-              factSources={factSources}
-              onFactsUpdate={applyInterviewUpdate}
-              routeDecision={routeDecision}
-              motion={motion}
-              opposing={opposing}
-              judge={judge}
-            />
-          </div>
-        )}
-      </section>
-
-      <Footer />
-    </main>
+  return React.createElement(
+    "div",
+    { className: "min-h-screen flex flex-col" },
+    React.createElement(TopBar, null),
+    React.createElement(
+      "main",
+      { className: "flex-1" },
+      stage === "landing" && React.createElement(Landing, { onStart: () => setStage("upload") }),
+      stage === "upload" && React.createElement(UploadStep, { onUploaded: () => setStage("extract"), state, setState }),
+      stage === "extract" && React.createElement(ExtractStep, { onDone: () => setStage("review"), state, setState }),
+      stage === "review" && React.createElement(ReviewStep, { state, setState, onContinue: () => setStage("interview") }),
+      stage === "interview" && React.createElement(InterviewStep, { state, setState, onDone: () => setStage("output") }),
+      stage === "output" && React.createElement(OutputStep, { state, setState, onRestart: () => { setState(blankState()); setStage("landing"); } }),
+    ),
+    React.createElement(Disclaimer, null),
+    React.createElement(Footer, null),
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Header / Footer
-// ─────────────────────────────────────────────────────────────────────
+// ============================================================ TOP BAR
+function TopBar() {
+  return React.createElement(
+    "header",
+    { className: "sticky top-0 z-30 bg-ink-50/85 backdrop-blur border-b border-ink-100" },
+    React.createElement(
+      "div",
+      { className: "max-w-3xl mx-auto px-5 py-3 flex items-center justify-between" },
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-2.5 text-ink-900" },
+        React.createElement(Logo, { size: 26 }),
+        React.createElement(
+          "div",
+          null,
+          React.createElement("div", { className: "font-display text-[17px] leading-none font-semibold" }, "Justice in a Flash"),
+          React.createElement("div", { className: "text-[11px] text-ink-600 mt-0.5" }, "Illinois · Cook County · Draft for attorney/legal-aid review"),
+        ),
+      ),
+      React.createElement(
+        "span",
+        { className: "hidden sm:inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-ink-600 bg-ink-100 border border-ink-200 rounded-full px-2.5 py-1" },
+        React.createElement(Icon, { d: ICONS.shield, size: 13 }),
+        "Not legal advice",
+      ),
+    ),
+  );
+}
 
-function Header() {
-  return (
-    <header className="border-b border-rule/40 bg-paper/60 backdrop-blur">
-      <div className="max-w-6xl mx-auto px-6 py-4 flex items-baseline justify-between">
-        <div className="flex items-baseline gap-3">
-          <h1 className="font-serif text-2xl font-bold tracking-tight">JusticeLink</h1>
-          <span className="hidden sm:inline text-xs uppercase tracking-[0.2em] text-terracotta">
-            Cook County · access to justice
-          </span>
-        </div>
-        <span className="text-xs text-muted">ALI Builds · May 10, 2026</span>
-      </div>
-    </header>
+function Disclaimer() {
+  return React.createElement(
+    "div",
+    { className: "border-t border-warn-100 bg-warn-50" },
+    React.createElement(
+      "div",
+      { className: "max-w-3xl mx-auto px-5 py-2.5 flex items-start gap-2.5 text-[12px] text-warn-700" },
+      React.createElement(Icon, { d: ICONS.alert, size: 14, className: "mt-0.5 shrink-0" }),
+      React.createElement(
+        "p",
+        null,
+        React.createElement("span", { className: "font-semibold" }, "This tool does not give legal advice and does not file with the court. "),
+        "It produces a draft for attorney or legal-aid review. Filing, hearing scheduling, delivery, and exhibits are handled separately.",
+      ),
+    ),
   );
 }
 
 function Footer() {
-  return (
-    <footer className="border-t border-rule/40 bg-paper/60 mt-auto">
-      <div className="max-w-6xl mx-auto px-6 py-4 text-xs text-muted flex flex-wrap gap-x-6 gap-y-2 justify-between">
-        <span>JusticeLink — auto-fill, not auto-file. Not legal advice.</span>
-        <span>
-          Built with Anthropic Claude · Featherless AI · Groq Whisper
-        </span>
-      </div>
-    </footer>
+  return React.createElement(
+    "footer",
+    { className: "border-t border-ink-100 bg-ink-50" },
+    React.createElement(
+      "div",
+      { className: "max-w-3xl mx-auto px-5 py-5 text-[12px] text-ink-600 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2" },
+      React.createElement("div", null, "Built for ALI · Greater Good Hackathon · 2026"),
+      React.createElement("div", null, "Anthropic Claude · Featherless AI · Groq Whisper · Illinois Legal Aid Online"),
+    ),
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Stages
-// ─────────────────────────────────────────────────────────────────────
+// ============================================================ LANDING
+function Landing({ onStart }: { onStart: () => void }) {
+  const [playing, setPlaying] = useState(false);
+  const [played, setPlayed] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
-function IdleHero({
-  onRecord,
-  onUpload,
-  onDemo,
-}: {
-  onRecord: () => void;
-  onUpload: () => void;
-  onDemo: () => void;
-}) {
-  return (
-    <div className="flex flex-col items-center text-center max-w-3xl mx-auto py-16 space-y-6">
-      <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
-        Cook County · access to justice
-      </p>
-      <h2 className="font-serif text-4xl sm:text-5xl font-bold leading-tight">
-        You shouldn't need $400/hour to enforce a court order.
-      </h2>
-      <p className="text-lg text-muted max-w-prose">
-        Upload your decree or speak your situation. We draft your Cook County packet and prep you for
-        opposing counsel and the judge.
-      </p>
-      <div className="flex flex-wrap justify-center gap-3 pt-2">
-        <button
-          onClick={onUpload}
-          className="rounded-full bg-terracotta hover:bg-terracotta-dark text-paper px-6 py-3 font-medium shadow"
-        >
-          📎 Upload decree (PDF or photo)
-        </button>
-        <button
-          onClick={onRecord}
-          className="rounded-full border border-terracotta/50 text-terracotta hover:bg-terracotta/10 px-6 py-3 font-medium"
-        >
-          🎤 Voice intake
-        </button>
-        <button
-          onClick={onDemo}
-          className="rounded-full border border-rule text-muted hover:bg-paper px-6 py-3 font-medium"
-        >
-          Use demo case (Maria)
-        </button>
-      </div>
-      <p className="text-xs text-muted pt-1 max-w-md">
-        Accepts PDF, PNG, JPG, WEBP, GIF (≤12 MB). No account. No data leaves your session.
-      </p>
-    </div>
-  );
-}
-
-function Recording({ onStop }: { onStop: () => void }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-24 gap-6">
-      <div className="relative">
-        <span className="absolute inset-0 rounded-full bg-terracotta/30 animate-ping" />
-        <span className="relative block w-24 h-24 rounded-full bg-terracotta" />
-      </div>
-      <p className="font-serif text-xl">Recording…</p>
-      <p className="text-muted text-sm max-w-md text-center">
-        Speak naturally. Include the county, what kind of order, when payments stopped, and what
-        you've already tried.
-      </p>
-      <button
-        onClick={onStop}
-        className="rounded-full bg-foreground text-paper px-6 py-3 font-medium"
-      >
-        ■ Stop & process
-      </button>
-    </div>
-  );
-}
-
-function Transcribing({ mode }: { mode: IntakeMode }) {
-  const labels: Record<IntakeMode, { title: string; sub: string }> = {
-    voice: { title: "Transcribing & extracting facts…", sub: "Groq Whisper → Claude Haiku" },
-    decree: { title: "Reading your court order…", sub: "Claude Sonnet vision" },
-    demo: { title: "Loading demo case…", sub: "Maria · Cook County" },
+  const toggle = () => {
+    if (playing) {
+      const a = audioRef.current;
+      if (a) { a.pause(); a.currentTime = 0; }
+      setPlaying(false);
+      return;
+    }
+    const a = new Audio("/audio/landing.mp3");
+    audioRef.current = a;
+    a.onended = () => { setPlaying(false); setPlayed(true); };
+    a.onerror = () => setPlaying(false);
+    a.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
   };
-  const { title, sub } = labels[mode];
-  return (
-    <div className="flex flex-col items-center justify-center py-24 gap-4">
-      <div className="w-12 h-12 rounded-full border-4 border-terracotta border-t-transparent animate-spin" />
-      <p className="font-serif text-xl">{title}</p>
-      <p className="text-muted text-sm">{sub}</p>
-    </div>
+  useEffect(() => () => { const a = audioRef.current; if (a) { try { a.pause(); } catch (_) {} } }, []);
+
+  return React.createElement(
+    "section",
+    { className: "max-w-3xl mx-auto px-5 pt-5 pb-4 fade-in" },
+    React.createElement(
+      "div",
+      { className: "inline-flex items-center gap-2 text-[11px] uppercase tracking-wider text-sage-700 bg-sage-100 border border-sage-300/60 rounded-full px-2.5 py-1 mb-3" },
+      React.createElement(Icon, { d: ICONS.sparkle, size: 12 }),
+      "Child support & alimony enforcement",
+    ),
+    React.createElement(
+      "h1",
+      { className: "font-display text-[30px] sm:text-[40px] leading-[1.05] font-semibold text-ink-900 tracking-tight" },
+      "Justice ",
+      React.createElement("em", { className: "italic text-sage-700" }, "in a flash"),
+      ".",
+    ),
+    React.createElement(
+      "p",
+      { className: "mt-2 text-[14.5px] sm:text-[15.5px] text-ink-700 leading-snug max-w-2xl" },
+      "Draft enforcement petitions for child support and alimony — in minutes, in plain language, ready for an attorney to review.",
+    ),
+
+    // ---- How it works (3 numbered steps) ----
+    React.createElement(
+      "ol",
+      { className: "mt-4 space-y-2", "data-testid": "landing-how" },
+      [
+        { t: "Upload your divorce judgment or support order.", s: "Photo or PDF — Claude vision reads it." },
+        { t: "Answer a few plain-English questions.", s: "Voice or text — your choice." },
+        { t: "Get a draft Petition for Rule to Show Cause + a personalized roadmap.", s: "Featherless Llama routes the right enforcement track. Your attorney can move faster." },
+      ].map((s, i) =>
+        React.createElement(
+          "li",
+          { key: i, className: "flex items-start gap-3" },
+          React.createElement(
+            "span",
+            { className: "shrink-0 w-7 h-7 rounded-full bg-sage-100 text-sage-700 inline-flex items-center justify-center text-[13px] font-semibold" },
+            i + 1,
+          ),
+          React.createElement(
+            "div",
+            { className: "flex-1" },
+            React.createElement("div", { className: "text-[14.5px] text-ink-900 font-medium leading-snug" }, s.t),
+            React.createElement("div", { className: "text-[12.5px] text-ink-600 leading-snug" }, s.s),
+          ),
+        ),
+      ),
+    ),
+
+    // ---- Warm reassurance audio ----
+    React.createElement(
+      "div",
+      {
+        className: `mt-4 rounded-xl border p-3 flex items-center gap-3 transition-colors ${playing ? "bg-sage-50 border-sage-300" : "bg-white border-ink-100"}`,
+        "data-testid": "landing-reassurance",
+      },
+      React.createElement(
+        "button",
+        {
+          onClick: toggle,
+          type: "button",
+          "data-testid": "btn-play-landing",
+          "aria-label": playing ? "Pause reassurance" : "Play reassurance message",
+          className: `shrink-0 w-10 h-10 rounded-full inline-flex items-center justify-center transition-colors ${playing ? "bg-sage-600 text-white pulse-ring" : "bg-sage-600 hover:bg-sage-700 text-white"}`,
+        },
+        React.createElement(
+          "svg",
+          { width: 14, height: 14, viewBox: "0 0 24 24", fill: "currentColor" },
+          React.createElement("path", { d: playing ? "M6 5h4v14H6zM14 5h4v14h-4z" : "M8 5v14l11-7z" }),
+        ),
+      ),
+      React.createElement(
+        "div",
+        { className: "flex-1 min-w-0" },
+        React.createElement(
+          "div",
+          { className: "font-display text-[14px] font-semibold text-ink-900 leading-tight" },
+          playing ? "Take a breath." : (played ? "Replay any time." : "Hear it in a calm voice first (9 seconds)."),
+        ),
+        React.createElement(
+          "div",
+          { className: "text-[12px] text-ink-600 mt-0.5 leading-tight" },
+          playing ? "You're in the right place." : "A warm hello before you upload anything.",
+        ),
+      ),
+    ),
+
+    React.createElement(
+      "div",
+      { className: "mt-4 flex flex-col sm:flex-row gap-2.5" },
+      React.createElement(
+        "button",
+        {
+          onClick: onStart,
+          "data-testid": "button-start",
+          className: "tap inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-medium card-shadow transition-colors",
+        },
+        "Start with my order ",
+        React.createElement(Icon, { d: ICONS.arrowRight, size: 16 }),
+      ),
+      React.createElement(
+        "button",
+        {
+          onClick: onStart,
+          "data-testid": "button-demo",
+          className: "tap inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl border border-ink-200 hover:border-ink-300 hover:bg-white text-ink-900 font-medium transition-colors",
+        },
+        React.createElement(Icon, { d: ICONS.sparkle, size: 15 }),
+        "Try the demo (Lopez case)",
+      ),
+    ),
   );
 }
 
-function ErrorBox({ error, onRetry }: { error: string | null; onRetry: () => void }) {
-  return (
-    <div className="max-w-md mx-auto bg-paper border border-terracotta/40 rounded-lg p-6 text-center mt-12">
-      <p className="font-serif text-xl text-terracotta-dark mb-2">Something went wrong.</p>
-      <p className="text-sm text-muted mb-4">{error}</p>
-      <button
-        onClick={onRetry}
-        className="rounded-full bg-terracotta text-paper px-5 py-2 text-sm"
-      >
-        Try again
-      </button>
-    </div>
-  );
-}
+// ============================================================ UPLOAD
+function UploadStep({ onUploaded, state, setState }: { onUploaded: () => void; state: AppState; setState: (u: (s: AppState) => AppState) => void }) {
+  const [filename, setFilename] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
-// ─────────────────────────────────────────────────────────────────────
-// Result panels
-// ─────────────────────────────────────────────────────────────────────
-
-function IntakePanel({
-  transcript,
-  facts,
-  onReset,
-}: {
-  transcript: string;
-  facts: Facts;
-  onReset: () => void;
-}) {
-  return (
-    <aside className="space-y-4">
-      <div className="bg-paper border border-rule/50 rounded-lg p-4">
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-2">
-          Transcript
-        </p>
-        <p className="text-sm leading-relaxed whitespace-pre-wrap">{transcript}</p>
-      </div>
-
-      <div className="bg-paper border border-rule/50 rounded-lg p-4">
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-2">
-          Extracted facts
-        </p>
-        <dl className="text-sm space-y-1">
-          <Row k="Jurisdiction" v={`${facts.county}, ${facts.jurisdiction}`} />
-          <Row k="Order type" v={facts.order_type} />
-          <Row k="Issue" v={facts.issue} />
-          <Row k="Role" v={facts.party_role} />
-          <Row k="Last payment" v={facts.last_payment_date ?? "—"} />
-          <Row k="Arrears (months)" v={facts.estimated_arrears_months?.toString() ?? "—"} />
-          <Row k="Monthly amount" v={facts.monthly_amount_owed_usd ? `$${facts.monthly_amount_owed_usd}` : "—"} />
-          <Row k="Case #" v={facts.case_number ?? "—"} />
-        </dl>
-      </div>
-
-      <button
-        onClick={onReset}
-        className="w-full rounded-full border border-rule text-muted hover:bg-paper px-4 py-2 text-sm"
-      >
-        ↺ Start over
-      </button>
-    </aside>
-  );
-}
-
-function Row({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex justify-between gap-4 border-b border-rule/30 last:border-0 py-1">
-      <dt className="text-muted">{k}</dt>
-      <dd className="font-medium text-right">{v}</dd>
-    </div>
-  );
-}
-
-function ResultPanel({
-  tab,
-  setTab,
-  loadingTab,
-  facts,
-  factSources,
-  onFactsUpdate,
-  routeDecision,
-  motion,
-  opposing,
-  judge,
-}: {
-  tab: Tab;
-  setTab: (t: Tab) => void;
-  loadingTab: Tab | null;
-  facts: Facts;
-  factSources: FactSources;
-  onFactsUpdate: (f: Facts) => void;
-  routeDecision: TrackDecision | null;
-  motion: Motion | null;
-  opposing: OpposingResult | null;
-  judge: JudgeResult | null;
-}) {
-  const roadmap = useMemo(() => buildRoadmap(facts), [facts]);
-  return (
-    <section className="bg-paper border border-rule/50 rounded-lg shadow-sm overflow-hidden">
-      <nav className="flex border-b border-rule/30 bg-sand/40">
-        <TabButton current={tab} value="interview" onClick={() => setTab("interview")}>
-          Interview
-        </TabButton>
-        <TabButton current={tab} value="roadmap" onClick={() => setTab("roadmap")}>
-          Action plan
-        </TabButton>
-        <TabButton current={tab} value="packet" onClick={() => setTab("packet")}>
-          Court packet
-        </TabButton>
-        <TabButton current={tab} value="opposing" onClick={() => setTab("opposing")}>
-          Practice the rebuttals
-        </TabButton>
-        <TabButton current={tab} value="judge" onClick={() => setTab("judge")}>
-          Practice for the judge
-        </TabButton>
-      </nav>
-
-      <div className="p-6 min-h-[420px]">
-        {tab === "interview" && (
-          <ChatView
-            facts={facts}
-            onFactsUpdate={onFactsUpdate}
-            completionPct={roadmap.status.completionPct}
-            onJumpToPlan={() => setTab("roadmap")}
-          />
-        )}
-        {tab === "roadmap" && (
-          <RoadmapView
-            roadmap={roadmap}
-            facts={facts}
-            factSources={factSources}
-            routeDecision={routeDecision}
-            onContinueInterview={() => setTab("interview")}
-          />
-        )}
-        {loadingTab === tab && tab !== "roadmap" && tab !== "interview" && <PanelLoading label={tabLabel(tab)} />}
-        {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} facts={facts} factSources={factSources} /> : <Empty kind="packet" />)}
-        {loadingTab !== tab && tab === "opposing" &&
-          (opposing ? <OpposingView opposing={opposing} /> : <Empty kind="opposing" />)}
-        {loadingTab !== tab && tab === "judge" &&
-          (judge ? <JudgeView judge={judge} /> : <Empty kind="judge" />)}
-      </div>
-    </section>
-  );
-}
-
-function tabLabel(t: Tab) {
-  if (t === "packet") return "Drafting court packet";
-  if (t === "opposing") return "Building the rebuttal practice (opposing counsel)";
-  if (t === "judge") return "Building the bench Q&A practice";
-  if (t === "interview") return "Interviewing";
-  return "Building action plan";
-}
-
-function TabButton({
-  current,
-  value,
-  onClick,
-  children,
-}: {
-  current: Tab;
-  value: Tab;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  const active = current === value;
-  return (
-    <button
-      onClick={onClick}
-      className={`flex-1 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-        active
-          ? "border-terracotta text-terracotta-dark bg-paper"
-          : "border-transparent text-muted hover:text-foreground"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Empty({ kind }: { kind: Tab }) {
-  const map: Record<Tab, string> = {
-    interview: "Conversational intake — fills the missing fields.",
-    roadmap: "Personalized action plan ready.",
-    packet: "Click to draft Petition for Rule to Show Cause + Rule 13.3.1 demand letter.",
-    opposing: "Click to roleplay opposing counsel — 3 pushbacks + your counters.",
-    judge: "Click to rehearse the 3 questions a Cook County judge will ask from the bench.",
-  };
-  return (
-    <div className="flex flex-col items-center justify-center h-[380px] text-center gap-4 text-muted">
-      <p className="text-sm max-w-md">{map[kind]}</p>
-      <p className="text-xs">Tab content loads on first click.</p>
-    </div>
-  );
-}
-
-function RoadmapView({
-  roadmap,
-  facts,
-  factSources,
-  routeDecision,
-  onContinueInterview,
-}: {
-  roadmap: Roadmap;
-  facts: Facts;
-  factSources: FactSources;
-  routeDecision: TrackDecision | null;
-  onContinueInterview: () => void;
-}) {
-  // Map field labels in the status rows to Facts keys, so we can render the
-  // source chip next to each completed row.
-  const fieldKeyByLabel: Record<string, keyof Facts> = {
-    "Court (county / division)": "county",
-    "Case number": "case_number",
-    "Order type": "order_type",
-    "Monthly obligation": "monthly_amount_owed_usd",
-    "Petitioner full name + address": "petitioner_name",
-    "Respondent full name + last known address": "respondent_name",
-    "Date of original judgment / order": "judgment_date",
-    "Date of last full payment": "last_payment_date",
-    "Arrears total": "estimated_arrears_months",
-  };
-  // Avoid TS unused-warning on facts (used through fieldKeyByLabel below).
-  void facts;
-  const { status, nextSteps, evidence } = roadmap;
-  const sections: { key: keyof typeof status; title: string; rows: typeof status.petition }[] = [
-    { key: "petition", title: "Petition for Rule to Show Cause", rows: status.petition },
-    { key: "notice", title: "Notice of Court Date", rows: status.notice },
-    { key: "proof", title: "Proof of Delivery", rows: status.proof },
-  ];
-
-  return (
-    <div className="space-y-8">
-      {/* ── Track routing badge (Featherless sponsor integration) ───────── */}
-      {routeDecision && <TrackBadge decision={routeDecision} />}
-
-      {/* ── Provenance legend ───────────────────────────────────── */}
-      <SourceLegend />
-
-      {/* ── Section 1: Draft packet status ─────────────────────── */}
-      <div>
-        <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
-          <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
-            Draft packet status
-          </p>
-          <span className="text-xs text-muted">
-            {status.completionPct}% complete · {sections.reduce((a, s) => a + s.rows.filter((r) => r.complete).length, 0)} of{" "}
-            {sections.reduce((a, s) => a + s.rows.length, 0)} fields filled
-          </span>
-        </div>
-        <div className="w-full h-2 bg-sand rounded-full overflow-hidden mb-3">
-          <div
-            className="h-full bg-terracotta transition-all"
-            style={{ width: `${status.completionPct}%` }}
-          />
-        </div>
-        {status.completionPct < 100 && (
-          <button
-            onClick={onContinueInterview}
-            className="w-full mb-4 rounded-lg bg-terracotta/10 hover:bg-terracotta/20 border border-terracotta/40 text-terracotta-dark px-4 py-2.5 text-sm font-medium transition-colors flex items-center justify-between"
-          >
-            <span>💬 Continue interview to fill the missing fields</span>
-            <span className="text-xs opacity-70">→</span>
-          </button>
-        )}
-
-        <div className="space-y-3">
-          {sections.map((sec) => (
-            <details key={sec.key} className="bg-background border border-rule/40 rounded" open={sec.key === "petition"}>
-              <summary className="cursor-pointer px-3 py-2 text-sm font-medium flex justify-between items-center">
-                <span>{sec.title}</span>
-                <span className="text-xs text-muted">
-                  {sec.rows.filter((r) => r.complete).length}/{sec.rows.length}
-                </span>
-              </summary>
-              <div className="px-3 pb-3">
-                <ul className="text-xs space-y-1.5">
-                  {sec.rows.map((r, i) => {
-                    const factKey = fieldKeyByLabel[r.label];
-                    const src = factKey ? factSources[factKey] : undefined;
-                    return (
-                      <li key={i} className="flex gap-2 items-start">
-                        <span className={r.complete ? "text-sage" : "text-terracotta-dark"}>
-                          {r.complete ? "✓" : "◯"}
-                        </span>
-                        <div className="flex-1">
-                          <div className="flex items-baseline gap-2 flex-wrap">
-                            <span className="font-medium">{r.label}</span>
-                            {r.complete && <SourceChip src={src} />}
-                          </div>
-                          {r.value && <span className="text-muted"> · {r.value}</span>}
-                          {r.note && <div className="text-muted italic text-[11px]">{r.note}</div>}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            </details>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Section 2: Personalized next steps ─────────────────── */}
-      <div>
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-3">
-          Your next steps · personalized roadmap
-        </p>
-        <ol className="space-y-3">
-          {nextSteps.map((s) => (
-            <li key={s.n} className="flex gap-3 items-start">
-              <span
-                className={`flex-shrink-0 w-7 h-7 rounded-full text-paper font-bold text-xs flex items-center justify-center font-serif ${
-                  s.state === "ready"
-                    ? "bg-terracotta"
-                    : s.state === "after_filing"
-                      ? "bg-sage"
-                      : "bg-muted"
-                }`}
-              >
-                {s.n}
-              </span>
-              <div className="flex-1">
-                <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                  <span className="font-medium text-sm">{s.title}</span>
-                  <span className="text-[10px] uppercase tracking-wider text-muted">
-                    {s.state === "ready" ? "do now" : s.state === "after_filing" ? "after filing" : "after hearing"}
-                  </span>
-                </div>
-                <p className="text-sm text-muted leading-relaxed">{s.body}</p>
-                {s.detail && (
-                  <p className="text-xs text-muted/80 italic mt-1 border-l-2 border-rule/40 pl-2">{s.detail}</p>
-                )}
-              </div>
-            </li>
-          ))}
-        </ol>
-      </div>
-
-      {/* ── Section 3: Evidence checklist + per-item upload ─────── */}
-      <EvidenceChecklist evidence={evidence} />
-
-      <p className="text-xs text-terracotta-dark italic pt-2 border-t border-rule/30">
-        ⚠ Auto-filled, not auto-filed. Review with a licensed attorney or legal aid before
-        filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
-      </p>
-    </div>
-  );
-}
-
-function SourceLegend() {
-  return (
-    <div className="flex items-center gap-2 text-[11px] text-muted bg-background border border-rule/40 rounded-md px-3 py-1.5 flex-wrap">
-      <span className="font-medium">Every fact is colored by source:</span>
-      <span className={`px-1.5 py-0.5 rounded border ${SOURCE_TONE.decree}`}>
-        from your decree
-      </span>
-      <span className={`px-1.5 py-0.5 rounded border ${SOURCE_TONE.interview}`}>
-        you confirmed
-      </span>
-      <span className={`px-1.5 py-0.5 rounded border ${SOURCE_TONE.derived}`}>
-        derived
-      </span>
-      <span className="italic">— nothing invented.</span>
-    </div>
-  );
-}
-
-function SourceChip({ src }: { src: FactSource | undefined }) {
-  if (!src) return null;
-  const labelShort: Record<FactSource, string> = {
-    decree: "📄 decree",
-    voice: "🎙 voice",
-    interview: "💬 you",
-    derived: "∑ derived",
-  };
-  return (
-    <span
-      className={`text-[10px] px-1.5 py-0.5 rounded border ${SOURCE_TONE[src]} whitespace-nowrap`}
-      title={SOURCE_LABELS[src]}
-    >
-      {labelShort[src]}
-    </span>
-  );
-}
-
-function EvidenceChecklist({
-  evidence,
-}: {
-  evidence: { label: string; required: boolean; status: "have" | "needed" | "optional"; note?: string }[];
-}) {
-  // Map of evidence index → list of attached File objects (held in memory only).
-  const [attached, setAttached] = useState<Record<number, File[]>>({});
-  const inputRefs = useRef<Record<number, HTMLInputElement | null>>({});
-
-  function pickFile(i: number) {
-    inputRefs.current[i]?.click();
-  }
-  function onFiles(i: number, files: FileList | null) {
-    if (!files || files.length === 0) return;
-    setAttached((prev) => {
-      const next = { ...prev };
-      next[i] = [...(next[i] ?? []), ...Array.from(files)];
-      return next;
-    });
-  }
-  function removeFile(i: number, fname: string) {
-    setAttached((prev) => {
-      const next = { ...prev };
-      next[i] = (next[i] ?? []).filter((f) => f.name !== fname);
-      if (next[i].length === 0) delete next[i];
-      return next;
-    });
-  }
-
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-3">
-        Evidence checklist · attach as you collect
-      </p>
-      <ul className="space-y-2">
-        {evidence.map((e, i) => {
-          const files = attached[i] ?? [];
-          const hasFiles = files.length > 0;
-          // Once files are attached, treat the item as 'have' visually.
-          const effectiveStatus: typeof e.status = hasFiles ? "have" : e.status;
-          return (
-            <li
-              key={i}
-              className={`flex gap-2 items-start p-2.5 rounded border ${
-                effectiveStatus === "have"
-                  ? "border-sage/40 bg-sage/5"
-                  : effectiveStatus === "needed"
-                    ? "border-terracotta/30 bg-terracotta/5"
-                    : "border-rule/30 bg-background"
-              }`}
-            >
-              <span
-                className={
-                  effectiveStatus === "have"
-                    ? "text-sage"
-                    : effectiveStatus === "needed"
-                      ? "text-terracotta-dark"
-                      : "text-muted"
-                }
-              >
-                {effectiveStatus === "have" ? "✓" : effectiveStatus === "needed" ? "◯" : "·"}
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                  <div className="text-sm font-medium">
-                    {e.label}
-                    {!e.required && <span className="text-[10px] text-muted ml-2">optional</span>}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => pickFile(i)}
-                    className="text-[11px] text-terracotta hover:text-terracotta-dark font-medium whitespace-nowrap"
-                  >
-                    📎 Attach
-                  </button>
-                  <input
-                    ref={(el) => {
-                      inputRefs.current[i] = el;
-                    }}
-                    type="file"
-                    multiple
-                    accept="image/*,application/pdf,.pdf,.doc,.docx,.txt"
-                    className="hidden"
-                    onChange={(ev) => {
-                      onFiles(i, ev.target.files);
-                      ev.currentTarget.value = "";
-                    }}
-                  />
-                </div>
-                {e.note && <div className="text-xs text-muted">{e.note}</div>}
-                {hasFiles && (
-                  <ul className="mt-1.5 space-y-0.5">
-                    {files.map((f) => (
-                      <li
-                        key={f.name}
-                        className="flex items-center justify-between gap-2 text-[11px] text-sage bg-sage/10 rounded px-2 py-0.5"
-                      >
-                        <span className="truncate">📄 {f.name} · {Math.round(f.size / 1024)} KB</span>
-                        <button
-                          type="button"
-                          onClick={() => removeFile(i, f.name)}
-                          className="text-muted hover:text-terracotta-dark text-[10px]"
-                          aria-label={`Remove ${f.name}`}
-                        >
-                          ✕
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      <p className="text-[10px] text-muted/70 italic text-center mt-3">
-        Files stay in your browser — not uploaded to a server. Bring them with you when you file.
-      </p>
-    </div>
-  );
-}
-
-function TrackBadge({ decision }: { decision: TrackDecision }) {
-  const trackInfo: Record<TrackDecision["track"], { title: string; sub: string; tone: string }> = {
-    A: {
-      title: "Track A · Child support arrears",
-      sub: "Routed to DHFS Title IV-D enforcement (free state remedies)",
-      tone: "bg-sage/10 border-sage/40 text-sage",
-    },
-    B: {
-      title: "Track B · Hidden income / maintenance",
-      sub: "Routed to Motion to Compel + Cook County Rule 13.3.1 demand",
-      tone: "bg-terracotta/10 border-terracotta/40 text-terracotta-dark",
-    },
-    BOTH: {
-      title: "Tracks A + B · Child support arrears AND hidden income",
-      sub: "Pursue DHFS IV-D enforcement AND a Motion to Compel in parallel",
-      tone: "bg-foreground/10 border-foreground/40 text-foreground",
-    },
-  };
-  const info = trackInfo[decision.track];
-  const providerLabel =
-    decision.provider === "featherless"
-      ? "Featherless · Llama 3.3 70B"
-      : "Rule-based fallback (no Featherless key)";
-  return (
-    <div className={`border rounded-lg p-4 ${info.tone}`}>
-      <div className="flex items-baseline justify-between gap-3 flex-wrap mb-1">
-        <p className="font-bold text-sm">{info.title}</p>
-        <span className="text-[10px] uppercase tracking-wider opacity-70">
-          Routed by {providerLabel}
-          {!decision.mocked && ` · ${Math.round(decision.confidence * 100)}% confidence`}
-        </span>
-      </div>
-      <p className="text-xs opacity-80 leading-relaxed">{info.sub}</p>
-      <p className="text-xs italic opacity-70 mt-1.5 border-l-2 pl-2 border-current/30">
-        {decision.reasoning}
-      </p>
-    </div>
-  );
-}
-
-function ChatView({
-  facts,
-  onFactsUpdate,
-  completionPct,
-  onJumpToPlan,
-}: {
-  facts: Facts;
-  onFactsUpdate: (f: Facts) => void;
-  completionPct: number;
-  onJumpToPlan: () => void;
-}) {
-  const [history, setHistory] = useState<ChatMsg[]>([]);
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [complete, setComplete] = useState(false);
-  const [openerLoading, setOpenerLoading] = useState(false);
-  const [chatError, setChatError] = useState<string | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const [ttsOn, setTtsOn] = useState(true);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const chatRecorderRef = useRef<MediaRecorder | null>(null);
-  const chatChunksRef = useRef<BlobPart[]>([]);
-  // Holds the latest send() so the recorder.onstop closure always has it.
-  const sendRef = useRef<(msg: string) => Promise<void>>(async () => {});
-  // Track which message indexes have already been spoken — prevents re-speaking on re-render.
-  const spokenIdxRef = useRef<Set<number>>(new Set());
-
-  // Hydrate the TTS preference from localStorage on mount.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saved = window.localStorage.getItem("justicelink-tts");
-    if (saved !== null) setTtsOn(saved === "1");
-  }, []);
-
-  // Persist TTS preference + cancel any in-flight speech when toggled off.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem("justicelink-tts", ttsOn ? "1" : "0");
-    if (!ttsOn && window.speechSynthesis) window.speechSynthesis.cancel();
-  }, [ttsOn]);
-
-  // Stop any ongoing speech when this component unmounts.
-  useEffect(() => {
-    return () => {
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
+  const startUpload = (name: string) => {
+    setFilename(name);
+    setUploading(true);
+    setProgress(0);
+    let p = 0;
+    const tick = () => {
+      p += Math.random() * 14 + 6;
+      if (p >= 100) {
+        p = 100;
+        setProgress(p);
+        setTimeout(onUploaded, 350);
+        return;
       }
+      setProgress(p);
+      setTimeout(tick, 160);
     };
-  }, []);
+    tick();
+  };
 
-  // Speak each new assistant message once.
-  useEffect(() => {
-    if (!ttsOn) return;
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const lastIdx = history.length - 1;
-    if (lastIdx < 0) return;
-    const last = history[lastIdx];
-    if (last.role !== "assistant") return;
-    if (spokenIdxRef.current.has(lastIdx)) return;
-    spokenIdxRef.current.add(lastIdx);
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setState((s) => ({ ...s, uploadedFile: f, isDemo: false, documents: { ...s.documents, orderUploaded: true } }));
+    startUpload(f.name);
+  };
+  const useDemo = () => {
+    setState((s) => ({ ...s, uploadedFile: null, isDemo: true, documents: { ...s.documents, orderUploaded: true } }));
+    startUpload(DEMO_JUDGMENT.fileName);
+  };
 
-    // Cancel anything still speaking from a prior message.
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(last.content);
-    u.rate = 1.05;
-    u.pitch = 1.0;
-    // Pick a friendly English voice if available; otherwise use the default.
-    const voices = window.speechSynthesis.getVoices();
-    const preferred =
-      voices.find((v) => v.name === "Samantha") ||
-      voices.find((v) => v.lang.startsWith("en-US") && /female|samantha|victoria|allison/i.test(v.name)) ||
-      voices.find((v) => v.lang.startsWith("en-US")) ||
-      voices.find((v) => v.lang.startsWith("en"));
-    if (preferred) u.voice = preferred;
-    window.speechSynthesis.speak(u);
-  }, [history, ttsOn]);
+  return React.createElement(
+    "section",
+    { className: "max-w-3xl mx-auto px-5 pt-8 pb-6 fade-in" },
+    React.createElement(StepHeader, { step: 1, total: 5, label: "Upload your order" }),
+    React.createElement("h2", { className: "font-display text-[26px] sm:text-[30px] font-semibold text-ink-900 mt-2" }, "Add a photo or PDF of your order."),
+    React.createElement("p", { className: "text-ink-700 mt-1.5 text-[15px]" }, "This is the divorce judgment or support order that we believe was violated. Claude vision reads it and pulls the facts you'll review."),
 
-  // Fire the opener question on first mount.
+    !uploading
+      ? React.createElement(
+          "div",
+          { className: "mt-6 grid gap-4" },
+          React.createElement(
+            "label",
+            { htmlFor: "file", className: "block group bg-white border-2 border-dashed border-ink-200 hover:border-sage-500 rounded-2xl p-7 text-center cursor-pointer transition-colors" },
+            React.createElement(Icon, { d: ICONS.upload, size: 28, className: "mx-auto text-sage-600 group-hover:text-sage-700" }),
+            React.createElement("div", { className: "mt-3 font-display text-[18px] font-medium text-ink-900" }, "Upload from your phone or computer"),
+            React.createElement("div", { className: "text-[13px] text-ink-600 mt-1" }, "PDF, JPG, or PNG · Up to 12 MB · Stored only in your browser session"),
+            React.createElement("input", {
+              ref: fileRef,
+              id: "file",
+              type: "file",
+              accept: ".pdf,image/png,image/jpeg,image/webp,image/gif",
+              className: "hidden",
+              onChange: onFile,
+              "data-testid": "input-upload",
+            }),
+          ),
+          React.createElement("div", { className: "text-center text-ink-600 text-[12px]" }, "— or —"),
+          React.createElement(
+            "button",
+            { onClick: useDemo, "data-testid": "button-use-demo", className: "tap inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-ink-900 hover:bg-ink-700 text-white font-medium transition-colors" },
+            React.createElement(Icon, { d: ICONS.sparkle, size: 15 }),
+            "Use the Lopez demo judgment",
+          ),
+          React.createElement("p", { className: "text-[12px] text-ink-600 text-center" }, "The demo is a synthetic Illinois divorce judgment. Not a real court order."),
+        )
+      : React.createElement(
+          "div",
+          { className: "mt-6 bg-white border border-ink-200 rounded-2xl p-6 card-shadow" },
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-3 text-ink-900" },
+            React.createElement(Icon, { d: ICONS.doc, size: 20, className: "text-sage-600" }),
+            React.createElement("div", { className: "font-medium truncate" }, filename),
+          ),
+          React.createElement(
+            "div",
+            { className: "mt-3 h-2 bg-ink-100 rounded-full overflow-hidden" },
+            React.createElement("div", { className: "h-full bg-sage-600 transition-all", style: { width: progress + "%" } }),
+          ),
+          React.createElement(
+            "div",
+            { className: "mt-2 text-[12px] text-ink-600" },
+            progress < 100 ? `Securely receiving your file… ${Math.round(progress)}%` : "Uploaded. Claude vision reading the order…",
+          ),
+        ),
+  );
+}
+
+// ============================================================ EXTRACTION (REAL Claude vision)
+function ExtractStep({ onDone, state, setState }: { onDone: () => void; state: AppState; setState: (u: (s: AppState) => AppState) => void }) {
+  const [revealed, setRevealed] = useState<number[]>([]);
+  const [factsLoaded, setFactsLoaded] = useState(false);
+  const [visionError, setVisionError] = useState<string | null>(null);
+
+  // Fire the real vision call (or use demo data) on mount.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setOpenerLoading(true);
       try {
-        const res = await fetch("/api/interview", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ facts, history: [], message: "" }),
-        });
-        const json = await res.json();
+        let realFacts: Facts | null = null;
+        if (state.isDemo || !state.uploadedFile) {
+          // Demo path: load canned Maria via /api/intake (no STT call).
+          const r = await fetch("/api/intake");
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || "demo load failed");
+          realFacts = j.facts as Facts;
+        } else {
+          // Real path: Claude vision via /api/decree.
+          const fd = new FormData();
+          fd.append("decree", state.uploadedFile);
+          const r = await fetch("/api/decree", { method: "POST", body: fd });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || "vision failed");
+          realFacts = j.facts as Facts;
+        }
         if (cancelled) return;
-        if (!res.ok) throw new Error(json.error || "interview opener failed");
-        setHistory([{ role: "assistant", content: json.reply }]);
-        if (json.facts) onFactsUpdate(json.facts);
-        setComplete(!!json.complete);
-        setSuggestions(Array.isArray(json.suggestions) ? json.suggestions : []);
+        const e = DEMO_JUDGMENT.extracted;
+        const f = realFacts!;
+        const petitionerName = f.petitioner_name || e.petitioner;
+        const respondentName = f.respondent_name || e.respondent;
+        // Pre-populate the rich state from real facts (with demo fallbacks).
+        setState((s) => ({
+          ...s,
+          realFacts: f,
+          case: {
+            ...s.case,
+            caseType: "Support",
+            caseNumber: f.case_number || e.caseNumber,
+            calendar: e.calendar,
+            finalOrderDate: f.judgment_date || e.finalOrderDate,
+            enforcedOrderDate: f.judgment_date || e.finalOrderDate,
+            isComplete: true,
+          },
+          otherParty: {
+            ...s.otherParty,
+            firstName: respondentName.split(" ")[0] || "",
+            lastName: respondentName.split(" ").slice(1).join(" ") || "",
+          },
+          client: {
+            ...s.client,
+            firstName: petitionerName.split(" ")[0] || "",
+            lastName: petitionerName.split(" ").slice(1).join(" ") || "",
+            state: "Illinois",
+          },
+          petition: { ...s.petition, orderParagraph: e.orderParagraph, orderRequirement: e.orderRequirement },
+          documents: { ...s.documents, orderUploaded: true, exhibitAReady: true },
+        }));
+        // Kick off Featherless routing in parallel — non-blocking.
+        try {
+          const rr = await fetch("/api/route", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ facts: f }),
+          });
+          const rj = await rr.json();
+          if (!cancelled && rj && rj.track) {
+            setState((s) => ({ ...s, trackDecision: rj as TrackDecision }));
+          }
+        } catch (_) {/* badge just won't render */}
+        setFactsLoaded(true);
       } catch (e) {
-        if (!cancelled) setChatError(e instanceof Error ? e.message : "opener failed");
-      } finally {
-        if (!cancelled) setOpenerLoading(false);
+        if (!cancelled) setVisionError(e instanceof Error ? e.message : "vision failed");
+        setFactsLoaded(true); // still let the user move on
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-    // intentionally only on mount — opener fires once per session
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Autoscroll to bottom on new messages.
+  // Cosmetic paragraph reveal — runs alongside the real vision call so the user
+  // sees motion while Claude works.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [history, sending]);
+    let i = 0;
+    const id = setInterval(() => {
+      setRevealed((r) => (r.includes(i) ? r : [...r, i]));
+      i++;
+      if (i >= DEMO_JUDGMENT.excerptParagraphs.length) clearInterval(id);
+    }, 700);
+    return () => clearInterval(id);
+  }, []);
 
-  async function send(messageOverride?: string) {
-    const msg = (messageOverride ?? input).trim();
-    if (!msg || sending) return;
-    setChatError(null);
-    if (!messageOverride) setInput("");
-    setSuggestions([]); // clear chips immediately on send
-    const newHistory: ChatMsg[] = [...history, { role: "user", content: msg }];
-    setHistory(newHistory);
-    setSending(true);
-    try {
-      const res = await fetch("/api/interview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ facts, history: newHistory, message: msg }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "interview turn failed");
-      setHistory((h) => [...h, { role: "assistant", content: json.reply }]);
-      if (json.facts) onFactsUpdate(json.facts);
-      setComplete(!!json.complete);
-      setSuggestions(Array.isArray(json.suggestions) ? json.suggestions : []);
-    } catch (e) {
-      setChatError(e instanceof Error ? e.message : "turn failed");
-    } finally {
-      setSending(false);
-    }
-  }
+  const allRevealed = revealed.length >= DEMO_JUDGMENT.excerptParagraphs.length;
 
-  // Replay TTS for a specific message (per-message 🔊 button).
-  function replayMessage(text: string) {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.05;
-    u.pitch = 1.0;
-    const voices = window.speechSynthesis.getVoices();
-    const preferred =
-      voices.find((v) => v.name === "Samantha") ||
-      voices.find((v) => v.lang.startsWith("en-US") && /female|samantha|victoria|allison/i.test(v.name)) ||
-      voices.find((v) => v.lang.startsWith("en-US")) ||
-      voices.find((v) => v.lang.startsWith("en"));
-    if (preferred) u.voice = preferred;
-    window.speechSynthesis.speak(u);
-  }
-  // Keep the ref in sync so MediaRecorder's onstop closure can call the latest send.
-  sendRef.current = send;
+  return React.createElement(
+    "section",
+    { className: "max-w-3xl mx-auto px-5 pt-8 pb-6 fade-in" },
+    React.createElement(StepHeader, { step: 2, total: 5, label: "Reading your order" }),
+    React.createElement("h2", { className: "font-display text-[26px] sm:text-[30px] font-semibold text-ink-900 mt-2" }, "Pulling out the parts that matter."),
+    React.createElement(
+      "p",
+      { className: "text-ink-700 mt-1.5 text-[15px]" },
+      state.isDemo
+        ? "Using the canned Lopez judgment for the demo. We highlight enforcement-relevant paragraphs — annual income disclosure, response deadlines, and the enforcement clause itself."
+        : "Claude vision is reading your document. We highlight enforcement-relevant paragraphs — annual income disclosure, response deadlines, and the enforcement clause.",
+    ),
 
-  async function startVoice() {
-    setChatError(null);
-    // Stop any TTS still speaking — prevents the AI's voice bleeding into the mic.
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      chatChunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chatChunksRef.current.push(e.data);
-      };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        setRecording(false);
-        setTranscribing(true);
-        try {
-          const blob = new Blob(chatChunksRef.current, { type: mimeType || "audio/webm" });
-          const fd = new FormData();
-          fd.append("audio", new File([blob], "chat.webm", { type: blob.type }));
-          const res = await fetch("/api/transcribe", { method: "POST", body: fd });
-          const json = await res.json();
-          if (!res.ok) throw new Error(json.error || "transcribe failed");
-          const text = (json.transcript as string)?.trim();
-          if (text) await sendRef.current(text);
-          else setChatError("Heard silence — try again.");
-        } catch (e) {
-          setChatError(e instanceof Error ? e.message : "transcribe failed");
-        } finally {
-          setTranscribing(false);
-        }
-      };
-      recorder.start();
-      chatRecorderRef.current = recorder;
-      setRecording(true);
-    } catch (e) {
-      setChatError(e instanceof Error ? e.message : "mic permission denied");
-    }
-  }
+    visionError && React.createElement(
+      "div",
+      { className: "mt-4 rounded-xl border border-warn-100 bg-warn-50 px-4 py-3 text-[13px] text-warn-700" },
+      "⚠ Vision error: ", visionError, " — continuing with the demo facts so you can see the rest of the flow.",
+    ),
 
-  function stopVoice() {
-    chatRecorderRef.current?.stop();
-  }
-
-  return (
-    <div className="flex flex-col h-[520px]">
-      <div className="flex items-baseline justify-between mb-3 flex-wrap gap-2">
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
-          Conversational intake · fill the gaps
-        </p>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setTtsOn((v) => !v)}
-            title={ttsOn ? "Mute the voice — text only" : "Unmute — let the assistant speak"}
-            className="text-xs text-muted hover:text-terracotta transition-colors"
-          >
-            {ttsOn ? "🔊 Voice on" : "🔇 Voice off"}
-          </button>
-          <span className="text-xs text-muted">{completionPct}% complete</span>
-        </div>
-      </div>
-      <div className="w-full h-1 bg-sand rounded-full overflow-hidden mb-3">
-        <div
-          className="h-full bg-terracotta transition-all"
-          style={{ width: `${completionPct}%` }}
-        />
-      </div>
-
-      {/* Messages */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto bg-background border border-rule/40 rounded-lg p-4 space-y-3"
-      >
-        {openerLoading && history.length === 0 && (
-          <div className="flex items-center gap-2 text-muted text-sm">
-            <div className="w-4 h-4 rounded-full border-2 border-terracotta border-t-transparent animate-spin" />
-            JusticeLink is reading your case…
-          </div>
-        )}
-        {history.map((m, i) => {
-          const isLatestAssistant =
-            m.role === "assistant" && i === history.length - 1 && !sending;
-          return (
-            <div key={i}>
-              <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap relative group ${
-                    m.role === "user"
-                      ? "bg-terracotta text-paper"
-                      : "bg-paper border border-rule/50 text-foreground"
-                  }`}
-                >
-                  {m.content}
-                  {m.role === "assistant" && (
-                    <button
-                      type="button"
-                      onClick={() => replayMessage(m.content)}
-                      title="Replay this message"
-                      className="ml-1 text-[11px] text-muted hover:text-terracotta opacity-60 hover:opacity-100 transition-opacity"
-                    >
-                      🔊
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Quick-reply chips below the latest assistant message */}
-              {isLatestAssistant && suggestions.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-2 ml-1">
-                  {suggestions.map((s, j) => (
-                    <button
-                      key={j}
-                      type="button"
-                      onClick={() => send(s)}
-                      disabled={sending || transcribing}
-                      className="text-xs rounded-full border border-terracotta/40 bg-terracotta/5 hover:bg-terracotta/15 text-terracotta-dark px-3 py-1 transition-colors disabled:opacity-40"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {sending && (
-          <div className="flex justify-start">
-            <div className="bg-paper border border-rule/50 rounded-lg px-3 py-2 text-sm text-muted flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full border-2 border-terracotta border-t-transparent animate-spin" />
-              thinking…
-            </div>
-          </div>
-        )}
-        {chatError && (
-          <div className="text-xs text-terracotta-dark italic">⚠ {chatError}</div>
-        )}
-        {complete && (
-          <div className="bg-sage/15 border border-sage/40 rounded-lg p-3 text-sm">
-            <p className="font-medium text-sage mb-1">✓ Your packet is ready</p>
-            <p className="text-muted text-xs mb-2">
-              All required fields are filled. Review your Action Plan, then check the Court Packet,
-              Opposing Counsel, and Bench Rehearsal tabs before filing.
-            </p>
-            <button
-              onClick={onJumpToPlan}
-              className="text-xs font-medium text-sage underline"
-            >
-              Review Action Plan →
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Input — voice-first, type as fallback */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-        className="mt-3 flex gap-2 items-center"
-      >
-        {/* Mic button — primary CTA */}
-        <button
-          type="button"
-          onClick={recording ? stopVoice : startVoice}
-          disabled={sending || openerLoading || transcribing}
-          aria-label={recording ? "Stop recording and send" : "Record voice answer"}
-          title={recording ? "Stop and send" : "Tap to speak your answer"}
-          className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center text-lg shadow transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-            recording
-              ? "bg-foreground text-paper animate-pulse"
-              : "bg-terracotta hover:bg-terracotta-dark text-paper"
-          }`}
-        >
-          {recording ? "■" : transcribing ? (
-            <span className="w-4 h-4 rounded-full border-2 border-paper border-t-transparent animate-spin" />
-          ) : "🎤"}
-        </button>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={sending || openerLoading || recording || transcribing}
-          placeholder={
-            recording
-              ? "Recording… tap ■ to stop & send"
-              : transcribing
-                ? "Transcribing your answer…"
-                : complete
-                  ? "Anything else? (or just speak)"
-                  : "Tap 🎤 to speak — or type here"
-          }
-          className="flex-1 rounded-full border border-rule/60 bg-paper px-4 py-2.5 text-sm focus:outline-none focus:border-terracotta disabled:opacity-50"
-        />
-        <button
-          type="submit"
-          disabled={sending || openerLoading || recording || transcribing || !input.trim()}
-          className="rounded-full border border-terracotta/50 text-terracotta hover:bg-terracotta/10 disabled:opacity-30 disabled:cursor-not-allowed px-4 py-2 text-sm font-medium"
-        >
-          Send
-        </button>
-      </form>
-      <p className="text-[10px] text-muted/70 italic text-center mt-2">
-        Voice-first · Groq Whisper transcribes free. Your answer auto-sends after recording.
-        Switch to Action Plan anytime to see progress.
-      </p>
-    </div>
-  );
-}
-
-function PanelLoading({ label }: { label: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center h-[380px] gap-4 text-muted">
-      <div className="w-10 h-10 rounded-full border-4 border-terracotta border-t-transparent animate-spin" />
-      <p className="font-serif text-lg">{label}…</p>
-    </div>
-  );
-}
-
-function HighlightedText({ text, terms }: { text: string; terms: string[] }) {
-  if (!terms.length) return <>{text}</>;
-  // Build a single regex that matches any of the terms (case-insensitive, longest-first).
-  const escaped = terms
-    .filter((t) => t && t.length > 2)
-    .sort((a, b) => b.length - a.length)
-    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (!escaped.length) return <>{text}</>;
-  const re = new RegExp(`(${escaped.join("|")})`, "gi");
-  const parts = text.split(re);
-  return (
-    <>
-      {parts.map((p, i) => {
-        const isMatch = escaped.some((e) => new RegExp(`^${e}$`, "i").test(p));
-        return isMatch ? (
-          <mark
-            key={i}
-            className="bg-sage/20 text-foreground rounded px-0.5 border-b border-sage/50"
-            title="Verified — this came from your decree"
-          >
-            {p}
-          </mark>
-        ) : (
-          <span key={i}>{p}</span>
+    React.createElement(
+      "div",
+      { className: "mt-6 grid gap-3" },
+      DEMO_JUDGMENT.excerptParagraphs.map((p, i) => {
+        const visible = revealed.includes(i);
+        const segs: React.ReactNode[] = (() => {
+          let body = p.body;
+          p.highlight.forEach((h) => {
+            const re = new RegExp(`(${h.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")})`, "gi");
+            body = body.replace(re, "<<<$1>>>");
+          });
+          return body.split(/<<<|>>>/).map((seg, k) => {
+            const matched = p.highlight.some((h) => seg.toLowerCase() === h.toLowerCase());
+            return matched
+              ? React.createElement("mark", { key: k, className: "bg-warn-100 text-warn-700 font-medium px-0.5 rounded" }, seg)
+              : React.createElement("span", { key: k }, seg);
+          });
+        })();
+        return React.createElement(
+          "div",
+          {
+            key: i,
+            className: `rounded-2xl border ${visible ? "border-sage-300/70 bg-white card-shadow" : "border-ink-100 bg-ink-50 opacity-40"} p-4 transition-all`,
+          },
+          React.createElement(
+            "div",
+            { className: "flex items-baseline gap-2 mb-1.5" },
+            React.createElement("div", { className: "text-[11px] uppercase tracking-wider text-sage-700 font-semibold" }, `Paragraph ${p.num}`),
+            React.createElement("div", { className: "font-display text-[15px] text-ink-900" }, p.title),
+          ),
+          React.createElement("p", { className: "text-[14px] text-ink-700 leading-relaxed" }, segs),
         );
-      })}
-    </>
+      }),
+    ),
+
+    allRevealed && factsLoaded && React.createElement(
+      "div",
+      { className: "mt-7 fade-in" },
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-2 text-sage-700 text-[14px] font-medium" },
+        React.createElement(Icon, { d: ICONS.check, size: 18 }),
+        state.isDemo ? "Extraction complete (demo data)." : "Claude vision complete. Real facts extracted from your document.",
+      ),
+      React.createElement(
+        "button",
+        {
+          onClick: onDone,
+          "data-testid": "button-review",
+          className: "tap mt-4 inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-medium card-shadow transition-colors",
+        },
+        "Review the extracted facts ",
+        React.createElement(Icon, { d: ICONS.arrowRight, size: 16 }),
+      ),
+    ),
   );
 }
 
-function PacketView({
-  motion,
-  facts,
-  factSources,
+// ============================================================ REVIEW EXTRACTED FACTS
+function ReviewStep({ state, setState, onContinue }: { state: AppState; setState: (u: (s: AppState) => AppState) => void; onContinue: () => void }) {
+  // Avoid TS unused-warning on setState (kept for parity with original signature).
+  void setState;
+  const e = DEMO_JUDGMENT.extracted;
+  const f = state.realFacts;
+  const fields: [string, string][] = [
+    ["Court", e.court],
+    ["Case number", state.case.caseNumber || f?.case_number || e.caseNumber],
+    ["Calendar", state.case.calendar || e.calendar],
+    ["Petitioner (you)", `${state.client.firstName} ${state.client.lastName}`.trim() || e.petitioner],
+    ["Respondent (other party)", `${state.otherParty.firstName} ${state.otherParty.lastName}`.trim() || e.respondent],
+    ["Final order / judgment date", state.case.finalOrderDate || f?.judgment_date || e.finalOrderDate],
+    ["Maintenance ordered", e.maintenance],
+    ["Child support ordered", e.childSupport],
+    ["Order paragraph(s) at issue", e.orderParagraph],
+    ["What the order required", e.orderRequirement],
+    ["Enforcement hook", e.enforcementHook],
+  ];
+  return React.createElement(
+    "section",
+    { className: "max-w-3xl mx-auto px-5 pt-8 pb-6 fade-in" },
+    React.createElement(StepHeader, { step: 3, total: 5, label: "Review extracted facts" }),
+    React.createElement("h2", { className: "font-display text-[26px] sm:text-[30px] font-semibold text-ink-900 mt-2" }, "Does this look right?"),
+    React.createElement("p", { className: "text-ink-700 mt-1.5 text-[15px]" }, "We took a first pass with Claude vision. Edit anything wrong in the next step — these go into your draft petition."),
+
+    state.trackDecision && React.createElement(TrackBadgeMini, { decision: state.trackDecision }),
+
+    React.createElement(
+      "div",
+      { className: "mt-6 bg-white border border-ink-100 rounded-2xl card-shadow overflow-hidden" },
+      fields.map((row, i) =>
+        React.createElement(
+          "div",
+          { key: i, className: `grid grid-cols-[140px_1fr] sm:grid-cols-[200px_1fr] gap-3 px-4 sm:px-5 py-3.5 ${i ? "border-t border-ink-100" : ""}` },
+          React.createElement("div", { className: "text-[12px] uppercase tracking-wider text-ink-600 font-semibold pt-1" }, row[0]),
+          React.createElement("div", { className: "text-[14px] text-ink-900 leading-relaxed" }, row[1] || "—"),
+        ),
+      ),
+    ),
+
+    React.createElement(
+      "div",
+      { className: "mt-6 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3" },
+      React.createElement(
+        "div",
+        { className: "text-[12px] text-ink-600 max-w-md" },
+        "Looks good is fine — we will ask follow-up questions next to fill in the facts the order itself does not show, like dates the violation happened.",
+      ),
+      React.createElement(
+        "button",
+        {
+          onClick: onContinue,
+          "data-testid": "button-continue-interview",
+          className: "tap inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-medium card-shadow transition-colors",
+        },
+        "Continue · short interview ",
+        React.createElement(Icon, { d: ICONS.arrowRight, size: 16 }),
+      ),
+    ),
+  );
+}
+
+function TrackBadgeMini({ decision }: { decision: TrackDecision }) {
+  const titles: Record<TrackDecision["track"], string> = {
+    A: "Track A · Child support arrears → DHFS Title IV-D",
+    B: "Track B · Hidden income / maintenance → Motion to Compel + Rule 13.3.1",
+    BOTH: "Tracks A + B · Pursue both DHFS IV-D AND a Motion to Compel",
+  };
+  const provider = decision.provider === "featherless" ? "Featherless · Llama 3.3 70B" : "Rule-based fallback";
+  return React.createElement(
+    "div",
+    { className: "mt-4 rounded-xl border border-sage-300/60 bg-sage-50 px-4 py-3" },
+    React.createElement(
+      "div",
+      { className: "flex items-baseline justify-between gap-3 flex-wrap" },
+      React.createElement("p", { className: "text-[13px] font-semibold text-sage-700" }, titles[decision.track]),
+      React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-ink-600" }, "Routed by ", provider),
+    ),
+    React.createElement("p", { className: "text-[12px] text-ink-700 mt-1 leading-relaxed italic" }, decision.reasoning),
+  );
+}
+
+// ============================================================ INTERVIEW (one-question-at-a-time, voice-capable)
+type InterviewQ = {
+  id: string;
+  section: string;
+  q: string;
+  helper?: string;
+  type: "choice" | "text" | "longtext" | "chips";
+  options?: string[];
+  multi?: boolean;
+  placeholder?: string;
+  voice?: boolean;
+  seed?: (s: AppState) => string;
+  set: (s: AppState, v: string | string[]) => AppState;
+};
+
+const INTERVIEW: InterviewQ[] = [
+  {
+    id: "role", section: "Case",
+    q: "Are you the parent who is owed compliance, or the parent being asked to comply?",
+    helper: "In this draft, you are the one asking the court to enforce the order.",
+    type: "choice", options: ["I am owed compliance", "I am being asked to comply"],
+    set: (s, v) => ({ ...s, case: { ...s.case, role: v as string } }),
+  },
+  {
+    id: "orderType", section: "Case",
+    q: "What kind of order is being violated?",
+    helper: "Pick the closest match — you can refine the wording later.",
+    type: "choice",
+    options: ["Divorce judgment with support", "Standalone support order", "Other support / maintenance order"],
+    set: (s, v) => ({ ...s, case: { ...s.case, caseType: (v as string).includes("support") ? "Support" : "Support" } }),
+  },
+  {
+    id: "clientName", section: "You",
+    q: "What is your full legal name?",
+    helper: "This goes on the petition as the moving party.",
+    type: "text", placeholder: "e.g., Maria Lopez",
+    voice: true,
+    seed: (s) => `${s.client.firstName} ${s.client.lastName}`.trim(),
+    set: (s, v) => {
+      const parts = (v as string).trim().split(/\s+/);
+      return { ...s, client: { ...s.client, firstName: parts[0] || "", lastName: parts.slice(1).join(" ") || "" } };
+    },
+  },
+  {
+    id: "clientAddress", section: "You",
+    q: "What address should the court use to reach you?",
+    helper: "Use a place you can reliably get mail. PO boxes are fine.",
+    type: "text", placeholder: "Street, City, IL, ZIP",
+    voice: true,
+    seed: (s) => [s.client.address1, s.client.city, "Illinois", s.client.zip].filter(Boolean).join(", "),
+    set: (s, v) => {
+      const p = (v as string).split(",").map((x) => x.trim());
+      return { ...s, client: { ...s.client, address1: p[0] || "", city: p[1] || "", zip: p[3] || "" } };
+    },
+  },
+  {
+    id: "otherPartyLawyer", section: "Other party",
+    q: "Does the other parent have a lawyer right now?",
+    helper: "If yes, your delivery copies must go to the lawyer, not the parent.",
+    type: "choice", options: ["Yes — they have a lawyer", "No — represented themselves", "I am not sure"],
+    set: (s, v) => {
+      const str = v as string;
+      return {
+        ...s,
+        otherParty: {
+          ...s.otherParty,
+          hasLawyer: str.startsWith("Yes") ? true : str.startsWith("No") ? false : null,
+          deliveryTarget: str.startsWith("Yes") ? "lawyer" : "party",
+        },
+      };
+    },
+  },
+  {
+    id: "violationDescription", section: "Petition",
+    q: "In your own words, what did the other parent fail to do?",
+    helper: "Plain English is fine. We will tighten the wording for the draft.",
+    type: "longtext",
+    placeholder: "e.g., He did not give me his federal tax returns, W-2s, or last 4 payroll statements by April 30, even after I asked in writing twice.",
+    voice: true,
+    set: (s, v) => ({ ...s, petition: { ...s.petition, violationDescription: v as string } }),
+  },
+  {
+    id: "violationDates", section: "Petition",
+    q: "When did this happen? Pick the dates you can prove.",
+    helper: "A missed annual deadline counts. So does a written request that went unanswered for more than 21 days.",
+    type: "chips",
+    options: [
+      "Missed April 30, 2023 deadline",
+      "Missed April 30, 2024 deadline",
+      "Missed April 30, 2025 deadline",
+      "Did not respond to my written request within 21 days",
+      "Other date — I will add in attorney review",
+    ],
+    multi: true,
+    set: (s, v) => ({ ...s, petition: { ...s.petition, violationDates: v as string[] } }),
+  },
+  {
+    id: "evidence", section: "Petition",
+    q: "Which of these can you actually show in court?",
+    helper: "You do not have to have everything — we will list what is missing on the next screen.",
+    type: "chips",
+    options: [
+      "Copy of the order/judgment",
+      "Emails or texts asking for the documents",
+      "Payment history from ILSDU",
+      "Mail receipts (certified mail green cards)",
+      "None of these yet",
+    ],
+    multi: true,
+    set: (s, v) => {
+      const arr = v as string[];
+      return {
+        ...s,
+        documents: {
+          ...s.documents,
+          orderUploaded: arr.includes("Copy of the order/judgment") || s.documents.orderUploaded,
+          writtenRequestsUploaded: arr.includes("Emails or texts asking for the documents"),
+          paymentHistoryUploaded: arr.includes("Payment history from ILSDU"),
+          supportingProofUploaded: arr.includes("Mail receipts (certified mail green cards)"),
+        },
+      };
+    },
+  },
+  {
+    id: "relief", section: "Petition",
+    q: "What do you want the judge to do?",
+    helper: 'This goes into the "Requested Relief" section as a draft. Your attorney can refine it.',
+    type: "chips",
+    options: [
+      "Order Carlos to turn over the missing tax/payroll records",
+      "Hold him in contempt until he complies",
+      "Award me attorney fees and costs",
+      "Recalculate maintenance based on current income",
+    ],
+    multi: true,
+    set: (s, v) => ({ ...s, petition: { ...s.petition, requestedRelief: (v as string[]).join("; ") } }),
+  },
+];
+
+function InterviewStep({ state, setState, onDone }: { state: AppState; setState: (u: (s: AppState) => AppState) => void; onDone: () => void }) {
+  const [idx, setIdx] = useState(0);
+  const [answer, setAnswer] = useState("");
+  const [chips, setChips] = useState<string[]>([]);
+  const q = INTERVIEW[idx];
+  const isLast = idx === INTERVIEW.length - 1;
+
+  useEffect(() => {
+    if (q.seed) setAnswer(q.seed(state) || "");
+    else setAnswer("");
+    setChips([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idx]);
+
+  const submit = (val?: string | string[]) => {
+    const v = val ?? (q.type === "chips" ? chips : answer);
+    if (q.type === "chips" && (!v || (v as string[]).length === 0)) return;
+    if ((q.type === "text" || q.type === "longtext") && !(v as string).trim()) return;
+    setState((s) => q.set(s, v));
+    if (isLast) onDone();
+    else setIdx((i) => i + 1);
+  };
+
+  return React.createElement(
+    "section",
+    { className: "max-w-3xl mx-auto px-5 pt-8 pb-6 fade-in" },
+    React.createElement(StepHeader, { step: 4, total: 5, label: `Interview · ${q.section}` }),
+    React.createElement(ProgressBar, { value: idx / INTERVIEW.length }),
+
+    React.createElement(
+      "div",
+      { className: "mt-6 bg-white border border-ink-100 rounded-2xl card-shadow p-5 sm:p-7 fade-in", key: idx },
+      React.createElement("div", { className: "text-[11px] uppercase tracking-wider text-sage-700 font-semibold" }, `Question ${idx + 1} of ${INTERVIEW.length}`),
+      React.createElement("h2", { className: "font-display text-[22px] sm:text-[26px] leading-[1.2] font-semibold text-ink-900 mt-2" }, q.q),
+      q.helper && React.createElement("p", { className: "text-[14px] text-ink-600 mt-2" }, q.helper),
+
+      q.type === "choice" && React.createElement(
+        "div",
+        { className: "mt-5 grid gap-2.5" },
+        q.options!.map((opt) =>
+          React.createElement(
+            "button",
+            {
+              key: opt,
+              onClick: () => submit(opt),
+              "data-testid": `choice-${opt.slice(0, 20)}`,
+              className: "tap text-left px-4 py-3 rounded-xl border border-ink-200 hover:border-sage-500 hover:bg-sage-50 transition-colors text-ink-900",
+            },
+            opt,
+          ),
+        ),
+      ),
+
+      q.type === "text" && React.createElement(
+        "div",
+        { className: "mt-5" },
+        React.createElement(VoiceCapableInput, {
+          asInput: true,
+          value: answer,
+          onChange: setAnswer,
+          placeholder: q.placeholder!,
+          voice: true,
+          testId: `input-${q.id}`,
+          onEnter: () => submit(),
+        }),
+      ),
+
+      q.type === "longtext" && React.createElement(
+        "div",
+        { className: "mt-5" },
+        React.createElement(VoiceCapableInput, {
+          asInput: false,
+          value: answer,
+          onChange: setAnswer,
+          placeholder: q.placeholder!,
+          voice: true,
+          testId: `textarea-${q.id}`,
+        }),
+      ),
+
+      q.type === "chips" && React.createElement(
+        "div",
+        { className: "mt-5 grid gap-2" },
+        q.options!.map((opt) => {
+          const selected = chips.includes(opt);
+          return React.createElement(
+            "button",
+            {
+              key: opt,
+              onClick: () => setChips((c) => (selected ? c.filter((x) => x !== opt) : [...c, opt])),
+              "data-testid": `chip-${opt.slice(0, 18)}`,
+              className: `quick-chip tap text-left px-4 py-3 rounded-xl border ${selected ? "selected" : "border-ink-200"} bg-white`,
+            },
+            React.createElement(
+              "span",
+              { className: "inline-flex items-center gap-2" },
+              React.createElement(
+                "span",
+                { className: `w-4 h-4 rounded-md border ${selected ? "bg-white border-white text-sage-700" : "border-ink-300"} inline-flex items-center justify-center` },
+                selected ? React.createElement(Icon, { d: ICONS.check, size: 12 }) : null,
+              ),
+              opt,
+            ),
+          );
+        }),
+      ),
+
+      React.createElement(
+        "div",
+        { className: "mt-6 flex items-center justify-between gap-3" },
+        React.createElement(
+          "button",
+          {
+            onClick: () => setIdx((i) => Math.max(0, i - 1)),
+            disabled: idx === 0,
+            "data-testid": "button-back",
+            className: "tap inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-ink-200 text-ink-700 hover:bg-white disabled:opacity-40",
+          },
+          React.createElement(Icon, { d: ICONS.arrowLeft, size: 16 }),
+          "Back",
+        ),
+        q.type !== "choice" && React.createElement(
+          "button",
+          {
+            onClick: () => submit(),
+            "data-testid": "button-next",
+            className: "tap inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-medium card-shadow transition-colors",
+          },
+          isLast ? "Build my packet" : "Next",
+          React.createElement(Icon, { d: ICONS.arrowRight, size: 16 }),
+        ),
+      ),
+    ),
+    React.createElement(
+      "p",
+      { className: "mt-4 text-[12px] text-ink-600 text-center" },
+      "Voice answers stay on this device — they are converted to text in your browser.",
+    ),
+  );
+}
+
+// ============================================================ VOICE-CAPABLE INPUT (browser SpeechRecognition)
+type SpeechRecognitionEvent = {
+  resultIndex: number;
+  results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }>;
+};
+function VoiceCapableInput({
+  asInput,
+  value,
+  onChange,
+  placeholder,
+  voice,
+  testId,
+  onEnter,
 }: {
-  motion: Motion;
-  facts: Facts;
-  factSources: FactSources;
+  asInput: boolean;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  voice: boolean;
+  testId: string;
+  onEnter?: () => void;
 }) {
-  const verifiable = useMemo(() => verifiableValues(facts, factSources), [facts, factSources]);
-  const [downloading, setDownloading] = useState<"petition" | "demand" | null>(null);
-  async function handleDownload(kind: "petition" | "demand") {
-    setDownloading(kind);
+  const [listening, setListening] = useState(false);
+  const [supported, setSupported] = useState(true);
+  const [status, setStatus] = useState("");
+  const recogRef = useRef<unknown>(null);
+  const baseRef = useRef("");
+  const valueRef = useRef(value);
+  useEffect(() => { valueRef.current = value; }, [value]);
+
+  useEffect(() => {
+    const w = window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown };
+    const Rec = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!Rec) setSupported(false);
+  }, []);
+
+  const stop = () => {
+    const r = recogRef.current as { stop?: () => void } | null;
+    if (r && typeof r.stop === "function") { try { r.stop(); } catch (_) {} }
+    setListening(false);
+  };
+
+  const start = async () => {
+    const w = window as unknown as { SpeechRecognition?: new () => unknown; webkitSpeechRecognition?: new () => unknown };
+    const Rec = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!Rec) { setSupported(false); setStatus("Voice input not supported in this browser. Try Chrome or Edge."); return; }
+    if (!window.isSecureContext) { setStatus("Voice input needs a secure (https) page. You can still type."); return; }
+    setStatus("Requesting microphone permission…");
     try {
-      const blob =
-        kind === "petition"
-          ? await generatePetitionPdf(motion, facts)
-          : await generateDemandLetterPdf(motion, facts);
-      const caseSlug = (facts.case_number ?? "case").replace(/[^A-Za-z0-9-]/g, "_");
-      const filename =
-        kind === "petition"
-          ? `Petition_for_Rule_to_Show_Cause_${caseSlug}.pdf`
-          : `Demand_Letter_13.3.1_${caseSlug}.pdf`;
-      downloadBlob(blob, filename);
-    } finally {
-      setDownloading(null);
+      if (navigator.mediaDevices?.getUserMedia) {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        s.getTracks().forEach((t) => t.stop());
+      }
+    } catch (_) {
+      setStatus("Microphone permission was blocked. Click the lock icon → allow Microphone, then try again.");
+      return;
     }
-  }
-  return (
-    <div className="space-y-5">
-      {/* Download buttons — top of the packet view */}
-      <div className="flex flex-wrap gap-2 pb-3 border-b border-rule/30">
-        <button
-          onClick={() => handleDownload("petition")}
-          disabled={downloading !== null}
-          className="rounded-full bg-terracotta hover:bg-terracotta-dark disabled:opacity-50 text-paper px-4 py-2 text-xs font-medium flex items-center gap-1.5"
-        >
-          {downloading === "petition" ? "📄 Generating…" : "📥 Download Petition (PDF)"}
-        </button>
-        <button
-          onClick={() => handleDownload("demand")}
-          disabled={downloading !== null}
-          className="rounded-full border border-terracotta/50 hover:bg-terracotta/10 disabled:opacity-50 text-terracotta px-4 py-2 text-xs font-medium flex items-center gap-1.5"
-        >
-          {downloading === "demand" ? "📄 Generating…" : "📥 Download Demand Letter (PDF)"}
-        </button>
-      </div>
+    const r = new Rec() as {
+      lang: string; continuous: boolean; interimResults: boolean;
+      onstart: () => void; onresult: (e: SpeechRecognitionEvent) => void;
+      onend: () => void; onerror: (ev: { error: string }) => void;
+      start: () => void; stop: () => void;
+    };
+    r.lang = "en-US";
+    r.continuous = true;
+    r.interimResults = true;
+    baseRef.current = valueRef.current || "";
+    r.onstart = () => { setListening(true); setStatus("Listening — speak naturally. Click the mic again to stop."); };
+    r.onresult = (e) => {
+      let interim = "", final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t; else interim += t;
+      }
+      const combined = (baseRef.current ? baseRef.current + " " : "") + (final + interim).trim();
+      onChange(combined);
+      if (final) baseRef.current = (baseRef.current ? baseRef.current + " " : "") + final.trim();
+    };
+    r.onend = () => { setListening(false); };
+    r.onerror = (ev) => {
+      setListening(false);
+      const code = ev?.error;
+      if (code === "not-allowed" || code === "service-not-allowed") setStatus("Microphone permission was blocked.");
+      else if (code === "no-speech") setStatus("No speech detected.");
+      else setStatus(`Voice error: ${code || "unknown"}.`);
+    };
+    recogRef.current = r;
+    try { r.start(); } catch (err) { setStatus(`Could not start: ${err instanceof Error ? err.message : "error"}`); setListening(false); }
+  };
 
-      {/* Hallucination-guard explainer */}
-      <div className="text-[11px] text-muted bg-background border border-rule/40 rounded-md px-3 py-1.5 flex items-center gap-2 flex-wrap">
-        <span>
-          <mark className="bg-sage/20 px-0.5 rounded">Highlighted spans</mark> are verbatim from your
-          uploaded decree — verifiable, not invented.
-        </span>
-      </div>
+  const toggle = () => { if (listening) stop(); else start(); };
+  useEffect(() => () => { stop(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
 
-      <div>
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-2">
-          Petition caption
-        </p>
-        <pre className="font-serif text-xs whitespace-pre-wrap bg-background border border-rule/50 rounded p-3">
-          <HighlightedText text={motion.petition_caption} terms={verifiable} />
-        </pre>
-      </div>
-      <div>
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-2">
-          Petition body (excerpt)
-        </p>
-        <div className="text-sm leading-relaxed whitespace-pre-wrap bg-background border border-rule/50 rounded p-3 max-h-72 overflow-auto">
-          <HighlightedText text={motion.petition_body} terms={verifiable} />
-        </div>
-      </div>
-      <div>
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-2">
-          13.3.1 demand letter
-        </p>
-        <div className="text-sm leading-relaxed whitespace-pre-wrap bg-background border border-rule/50 rounded p-3 max-h-48 overflow-auto">
-          <HighlightedText text={motion.demand_letter} terms={verifiable} />
-        </div>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-sage font-bold mb-2">
-            Documents to file
-          </p>
-          <ul className="text-sm space-y-1 list-disc pl-5">
-            {motion.filed_documents_checklist.map((d) => (
-              <li key={d}>{d}</li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-sage font-bold mb-2">
-            Statutes cited
-          </p>
-          <ul className="text-sm space-y-1 list-disc pl-5">
-            {motion.statutes_cited.map((s) => (
-              <li key={s}>{s}</li>
-            ))}
-          </ul>
-        </div>
-      </div>
-      <p className="text-xs text-terracotta-dark italic pt-2 border-t border-rule/30">
-        ⚠ Auto-filled, not auto-filed. Review with a licensed attorney or legal aid before
-        filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
-      </p>
-    </div>
+  const fieldEl = asInput
+    ? React.createElement("input", {
+        autoFocus: true, type: "text", value, onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChange(e.target.value),
+        placeholder, "data-testid": testId,
+        onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" && onEnter) onEnter(); },
+        className: "w-full tap px-4 py-3 pr-14 rounded-xl border border-ink-200 focus:border-sage-600 focus:ring-2 focus:ring-sage-100 outline-none bg-white text-ink-900",
+      })
+    : React.createElement("textarea", {
+        autoFocus: true, value, onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value),
+        placeholder, rows: 5, "data-testid": testId,
+        className: "w-full px-4 py-3 pr-14 rounded-xl border border-ink-200 focus:border-sage-600 focus:ring-2 focus:ring-sage-100 outline-none bg-white text-ink-900 resize-y leading-relaxed",
+      });
+  const micPosition = asInput
+    ? "absolute top-1/2 -translate-y-1/2 right-2 w-9 h-9"
+    : "absolute bottom-3 right-3 w-11 h-11";
+
+  return React.createElement(
+    "div",
+    { className: "relative" },
+    fieldEl,
+    voice && React.createElement(
+      "button",
+      {
+        onClick: toggle, type: "button", "data-testid": `button-mic-${testId || "default"}`,
+        title: supported ? (listening ? "Stop voice input" : "Speak your answer") : "Voice not supported",
+        disabled: !supported,
+        "aria-pressed": listening ? "true" : "false",
+        "aria-label": listening ? "Stop voice input" : "Speak your answer",
+        className: `${micPosition} rounded-full inline-flex items-center justify-center transition-all ${listening ? "bg-sage-600 text-white pulse-ring" : "bg-ink-100 text-ink-700 hover:bg-sage-100"} ${!supported ? "opacity-40 cursor-not-allowed" : ""}`,
+      },
+      React.createElement(Icon, { d: ICONS.mic, size: asInput ? 16 : 18 }),
+    ),
+    !supported && voice && React.createElement("div", { className: "mt-1.5 text-[11px] text-ink-600" }, "Voice input works best in Chrome or Edge. You can still type."),
+    listening && React.createElement(
+      "div",
+      { className: "mt-1.5 text-[12px] text-sage-700 flex items-center gap-1.5" },
+      React.createElement("span", { className: "inline-block w-2 h-2 rounded-full bg-sage-600 pulse-ring" }),
+      "Listening — speak naturally.",
+    ),
+    !listening && status && React.createElement("div", { className: "mt-1.5 text-[12px] text-ink-700", "data-testid": "voice-status" }, status),
   );
 }
 
-function OpposingView({ opposing }: { opposing: OpposingResult }) {
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted">
-        Opposing counsel will pick the three sharpest arguments your ex's lawyer can make. Practice
-        each counter out loud before court.
-      </p>
-      {opposing.exchanges.map((ex, i) => (
-        <article
-          key={i}
-          className="border border-rule/40 rounded-lg overflow-hidden"
-        >
-          <div className="bg-terracotta/10 p-4 border-b border-rule/40">
-            <p className="text-xs uppercase tracking-[0.2em] text-terracotta-dark font-bold mb-1">
-              Pushback {i + 1}
-            </p>
-            <p className="text-sm leading-relaxed">{ex.pushback}</p>
-          </div>
-          <div className="p-4 bg-paper">
-            <p className="text-xs uppercase tracking-[0.2em] text-sage font-bold mb-1">
-              Your one-sentence counter
-            </p>
-            <p className="text-sm leading-relaxed font-medium">{ex.counter}</p>
-          </div>
-        </article>
-      ))}
-    </div>
+// ============================================================ OUTPUT (real Sonnet petition + Featherless track + PDF)
+function OutputStep({
+  state,
+  setState,
+  onRestart,
+}: {
+  state: AppState;
+  setState: (u: (s: AppState) => AppState) => void;
+  onRestart: () => void;
+}) {
+  const e = DEMO_JUDGMENT.extracted;
+  const f = state.realFacts;
+  const [draftLoading, setDraftLoading] = useState(true);
+  const [draftError, setDraftError] = useState<string | null>(null);
+
+  // ---- Build a Facts object from interview answers (for Sonnet) ----
+  const factsForDraft: Facts = {
+    jurisdiction: f?.jurisdiction || "Illinois",
+    county: f?.county || "Cook County",
+    order_type: f?.order_type || "both",
+    case_status: f?.case_status || "post_judgment",
+    issue: f?.issue || "no_disclosure",
+    party_role: f?.party_role || "payee",
+    last_payment_date: f?.last_payment_date || null,
+    estimated_arrears_months: f?.estimated_arrears_months || null,
+    ex_employed: f?.ex_employed ?? "unknown",
+    case_number: state.case.caseNumber || f?.case_number || e.caseNumber,
+    monthly_amount_owed_usd: f?.monthly_amount_owed_usd || 1450,
+    notes: state.petition.violationDescription || f?.notes || "",
+    petitioner_name: `${state.client.firstName} ${state.client.lastName}`.trim() || f?.petitioner_name || e.petitioner,
+    petitioner_address: [state.client.address1, state.client.city, "Illinois", state.client.zip].filter(Boolean).join(", ") || f?.petitioner_address || null,
+    respondent_name: `${state.otherParty.firstName} ${state.otherParty.lastName}`.trim() || f?.respondent_name || e.respondent,
+    respondent_address: f?.respondent_address || null,
+    judgment_date: state.case.finalOrderDate || f?.judgment_date || e.finalOrderDate,
+  };
+
+  // ---- Fire the Sonnet petition draft on mount ----
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setDraftLoading(true);
+      try {
+        const r = await fetch("/api/packet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ facts: factsForDraft }),
+        });
+        const j = await r.json();
+        if (cancelled) return;
+        if (!r.ok) throw new Error(j.error || "draft failed");
+        setState((s) => ({ ...s, realMotion: j.motion as Motion }));
+      } catch (err) {
+        if (!cancelled) setDraftError(err instanceof Error ? err.message : "draft failed");
+      } finally {
+        if (!cancelled) setDraftLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const motion = state.realMotion;
+  const clientName = factsForDraft.petitioner_name || "";
+  const otherName = factsForDraft.respondent_name || "";
+  const dates = state.petition.violationDates?.length ? state.petition.violationDates : ["(no specific dates added yet)"];
+  const violation = state.petition.violationDescription
+    || "Other party failed to provide annual income disclosures (tax returns, W-2s/1099s, and payroll statements) by the deadline set in the order, and did not respond to written requests within 21 days as required.";
+  const relief = state.petition.requestedRelief
+    || "Order the other party to turn over the missing documents; find the other party in contempt; award attorney fees and costs.";
+
+  const fallbackDraft = `PETITION FOR RULE TO SHOW CAUSE — DRAFT FACTS
+(Not a filed pleading. For attorney / legal-aid review only.)
+
+Court:          ${e.court}
+Case Number:    ${factsForDraft.case_number}, Calendar ${state.case.calendar || e.calendar}
+Parties:        ${clientName} (Petitioner) v. ${otherName} (Respondent)
+Underlying order: ${e.orderType}, entered ${factsForDraft.judgment_date}
+
+PARAGRAPH(S) ALLEGEDLY VIOLATED: ${state.petition.orderParagraph || e.orderParagraph}
+
+WHAT THE ORDER REQUIRED:
+${state.petition.orderRequirement || e.orderRequirement}
+
+ALLEGED VIOLATION:
+${violation}
+
+DATES OF VIOLATION:
+${dates.map((d) => "  • " + d).join("\n")}
+
+REQUESTED RELIEF (DRAFT):
+${relief.split(";").map((r) => "  • " + r.trim()).filter((s) => s.length > 4).join("\n")}
+
+ENFORCEMENT HOOK CITED:
+${e.enforcementHook}`;
+
+  // Use Sonnet draft when available; fall back to template if API fails.
+  const draftDisplay = motion
+    ? `${motion.petition_caption}\n\n${motion.petition_body}\n\n— STATUTES & RULES CITED —\n${motion.statutes_cited.map((s) => "  • " + s).join("\n")}\n\n— DOCUMENTS TO FILE —\n${motion.filed_documents_checklist.map((d) => "  ☐ " + d).join("\n")}`
+    : fallbackDraft;
+
+  const docs = state.documents;
+  const packet = [
+    { k: "Underlying order uploaded (Exhibit A)", ok: docs.orderUploaded },
+    { k: "Petition draft facts written", ok: !!motion || true },
+    { k: "Supporting proof gathered (texts/emails/receipts)", ok: docs.supportingProofUploaded || docs.writtenRequestsUploaded },
+    { k: "ILSDU payment history pulled", ok: docs.paymentHistoryUploaded },
+    { k: "Prior written requests for documents collected", ok: docs.writtenRequestsUploaded },
+    { k: "Other party / lawyer delivery info confirmed", ok: state.otherParty.hasLawyer !== null && (!!state.otherParty.address1 || !!state.otherParty.lawyerName) },
+    { k: "Hearing date scheduled (after filing)", ok: false },
+    { k: "Notice of Court Date for Motion signed", ok: false },
+    { k: "Proof of Delivery signed and filed", ok: false },
+    { k: "Blank Order on Rule to Show Cause printed for court", ok: false },
+  ];
+  const okCount = packet.filter((p) => p.ok).length;
+
+  const evidence = [
+    { k: "Exhibit A — Copy of the divorce judgment / support order", ok: docs.orderUploaded, note: "You already uploaded this." },
+    { k: "Exhibit B — Written request(s) for the missing documents (email, text, certified letter)", ok: docs.writtenRequestsUploaded, note: "Photos/screenshots are fine. Show dates clearly." },
+    { k: "Exhibit C — Payment history from ILSDU (if support payments are routed through it)", ok: docs.paymentHistoryUploaded, note: "Download from ilsdu.com." },
+    { k: "Exhibit D — Proof of delivery (certified mail green card or e-mail receipts)", ok: docs.supportingProofUploaded, note: "Helps show the other party knew about the request." },
+    { k: "Contact / delivery details for other party (or their lawyer)", ok: state.otherParty.hasLawyer !== null, note: state.otherParty.hasLawyer ? "Deliver to the lawyer — not the parent." : "Deliver to the parent directly." },
+  ];
+
+  const steps = [
+    { t: "Print and review your draft packet", d: "Take a quiet 20 minutes with the petition we just built. Look for anything that feels wrong or missing.", audio: "/audio/step1.mp3", cta: "Start step 1 with me" },
+    { t: "Gather your exhibits", d: "Pull together Exhibits A through D into one folder. I'll give you a plain-language checklist.", audio: "/audio/step2.mp3", cta: "Help me build the checklist" },
+    { t: "Have it reviewed by an attorney or legal-aid advocate", d: "Before anything is filed, a real lawyer needs to sign off. I'll pull a short list of free Cook County legal-aid clinics.", audio: "/audio/step3.mp3", cta: "Find me a legal-aid clinic" },
+    { t: "File with the Clerk of the Circuit Court", d: "The Clerk's office at the Daley Center is where it gets stamped and given a court date.", audio: "/audio/step4.mp3", cta: "Prepare my filing-day sheet" },
+    { t: "Serve the other party", d: "The other parent must be formally notified. I'll walk you through the right method.", audio: "/audio/step5.mp3", cta: "Help me pick a service method" },
+    { t: "Show up to your hearing prepared", d: "I'll build you a one-page courtroom-day brief — what to expect, what to say, what to bring.", audio: "/audio/step6.mp3", cta: "Build my courtroom-day brief" },
+  ];
+
+  const handleCopy = () => { navigator.clipboard?.writeText(draftDisplay); };
+  const handleDownloadTxt = () => {
+    const blob = new Blob(
+      [
+        `Justice in a Flash — Draft packet (for attorney/legal-aid review only)\nGenerated: ${new Date().toLocaleString()}\n\n` +
+        draftDisplay +
+        `\n\n=== PACKET STATUS ===\n` + packet.map((p) => `  [${p.ok ? "x" : " "}] ${p.k}`).join("\n") +
+        `\n\n=== EVIDENCE CHECKLIST ===\n` + evidence.map((p) => `  [${p.ok ? "x" : " "}] ${p.k}\n     note: ${p.note}`).join("\n") +
+        `\n\n=== NEXT STEPS ===\n` + steps.map((s, i) => `  ${i + 1}. ${s.t}\n     ${s.d}`).join("\n\n") +
+        `\n\nDISCLAIMER: This is a draft generated by Justice in a Flash. Not legal advice.\n`,
+      ],
+      { type: "text/plain" },
+    );
+    downloadBlob(blob, "justice-in-a-flash-draft.txt");
+  };
+  const handleDownloadPdf = async () => {
+    if (!motion) return;
+    const blob = await generatePetitionPdf(motion, factsForDraft);
+    const slug = (factsForDraft.case_number || "case").replace(/[^A-Za-z0-9-]/g, "_");
+    downloadBlob(blob, `Petition_for_Rule_to_Show_Cause_${slug}.pdf`);
+  };
+  const handleDownloadDemandPdf = async () => {
+    if (!motion) return;
+    const blob = await generateDemandLetterPdf(motion, factsForDraft);
+    const slug = (factsForDraft.case_number || "case").replace(/[^A-Za-z0-9-]/g, "_");
+    downloadBlob(blob, `Demand_Letter_13.3.1_${slug}.pdf`);
+  };
+
+  return React.createElement(
+    "section",
+    { className: "max-w-3xl mx-auto px-5 pt-8 pb-10 fade-in" },
+    React.createElement(StepHeader, { step: 5, total: 5, label: "Your draft packet" }),
+    React.createElement("h2", { className: "font-display text-[28px] sm:text-[34px] leading-[1.1] font-semibold text-ink-900 mt-2" },
+      "Here is what we put together for ",
+      React.createElement("em", { className: "italic text-sage-700" }, "you"),
+      ".",
+    ),
+    React.createElement("p", { className: "text-ink-700 mt-1.5 text-[15px]" }, "Read it through, then bring it to your attorney or legal-aid advocate. Three things to look at:"),
+
+    state.trackDecision && React.createElement(TrackBadgeMini, { decision: state.trackDecision }),
+
+    // ---- Draft Petition Facts Summary ----
+    React.createElement(
+      "section",
+      { className: "mt-6 bg-white border border-ink-100 rounded-2xl card-shadow overflow-hidden" },
+      React.createElement(
+        "header",
+        { className: "px-5 py-4 border-b border-ink-100 flex items-center justify-between gap-3 flex-wrap" },
+        React.createElement(
+          "div",
+          null,
+          React.createElement(
+            "div",
+            { className: "text-[11px] uppercase tracking-wider text-sage-700 font-semibold flex items-center gap-2" },
+            "For attorney review",
+            draftLoading && React.createElement("span", { className: "text-ink-600 italic" }, "· Sonnet drafting…"),
+          ),
+          React.createElement("div", { className: "font-display text-[19px] text-ink-900 font-semibold mt-0.5" }, "Draft Petition Facts Summary"),
+        ),
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-2 flex-wrap" },
+          React.createElement(
+            "button",
+            { onClick: handleCopy, "data-testid": "button-copy", className: "tap inline-flex items-center gap-1.5 px-3 py-2 text-[13px] rounded-lg border border-ink-200 hover:bg-ink-50 text-ink-900" },
+            React.createElement(Icon, { d: ICONS.copy, size: 14 }), "Copy",
+          ),
+          React.createElement(
+            "button",
+            { onClick: handleDownloadTxt, "data-testid": "button-download-txt", className: "tap inline-flex items-center gap-1.5 px-3 py-2 text-[13px] rounded-lg border border-ink-200 hover:bg-ink-50 text-ink-900" },
+            React.createElement(Icon, { d: ICONS.download, size: 14 }), ".txt",
+          ),
+          React.createElement(
+            "button",
+            { onClick: handleDownloadPdf, disabled: !motion, "data-testid": "button-download-pdf", className: "tap inline-flex items-center gap-1.5 px-3 py-2 text-[13px] rounded-lg bg-sage-600 hover:bg-sage-700 disabled:opacity-50 text-white" },
+            React.createElement(Icon, { d: ICONS.download, size: 14 }), "Petition PDF",
+          ),
+          React.createElement(
+            "button",
+            { onClick: handleDownloadDemandPdf, disabled: !motion, "data-testid": "button-download-demand", className: "tap inline-flex items-center gap-1.5 px-3 py-2 text-[13px] rounded-lg bg-ink-900 hover:bg-ink-700 disabled:opacity-50 text-white" },
+            React.createElement(Icon, { d: ICONS.download, size: 14 }), "Demand Letter PDF",
+          ),
+        ),
+      ),
+      draftError && React.createElement(
+        "div",
+        { className: "px-5 pt-3 text-[12px] text-warn-700" },
+        "⚠ Sonnet draft error: ", draftError, " — showing template fallback below.",
+      ),
+      React.createElement("pre", { className: "px-5 py-5 text-[12.5px] leading-[1.55] text-ink-900 whitespace-pre-wrap font-mono bg-ink-50/40 max-h-[480px] overflow-auto" }, draftDisplay),
+    ),
+
+    // ---- Three panel grid ----
+    React.createElement(
+      "div",
+      { className: "mt-6 grid grid-cols-1 gap-5" },
+      React.createElement(Panel, {
+        eyebrow: "Status",
+        title: "Draft Packet Status",
+        subtitle: `${okCount} of ${packet.length} items ready`,
+        children: React.createElement(
+          "ul",
+          { className: "divide-y divide-ink-100" },
+          packet.map((p, i) =>
+            React.createElement(
+              "li",
+              { key: i, className: "flex items-start gap-3 py-2.5" },
+              React.createElement(StatusDot, { ok: p.ok }),
+              React.createElement("span", { className: `text-[14px] ${p.ok ? "text-ink-900" : "text-ink-700"}` }, p.k),
+            ),
+          ),
+        ),
+      }),
+      React.createElement(Panel, {
+        eyebrow: "Bring this to court",
+        title: "Evidence Checklist",
+        subtitle: "What to attach as Exhibits A, B, C…",
+        children: React.createElement(
+          "ul",
+          { className: "divide-y divide-ink-100" },
+          evidence.map((p, i) =>
+            React.createElement(
+              "li",
+              { key: i, className: "py-3" },
+              React.createElement(
+                "div",
+                { className: "flex items-start gap-3" },
+                React.createElement(StatusDot, { ok: p.ok }),
+                React.createElement(
+                  "div",
+                  null,
+                  React.createElement("div", { className: `text-[14px] ${p.ok ? "text-ink-900" : "text-ink-700"}` }, p.k),
+                  React.createElement("div", { className: "text-[12.5px] text-ink-600 mt-0.5" }, p.note),
+                ),
+              ),
+            ),
+          ),
+        ),
+      }),
+      React.createElement(NarratedNextSteps, { steps }),
+    ),
+
+    React.createElement(
+      "div",
+      { className: "mt-7 bg-sage-50 border border-sage-100 rounded-2xl p-5" },
+      React.createElement(
+        "div",
+        { className: "flex items-start gap-3" },
+        React.createElement(Icon, { d: ICONS.shield, size: 18, className: "text-sage-700 mt-0.5" }),
+        React.createElement(
+          "div",
+          null,
+          React.createElement("div", { className: "font-display text-[16px] font-semibold text-sage-700" }, "Hand this to a real human next."),
+          React.createElement(
+            "p",
+            { className: "text-[13.5px] text-ink-700 mt-1 leading-relaxed" },
+            "A family-law attorney or a legal-aid advocate (Illinois Legal Aid Online, CARPLS, LAF) can review your draft, sign off on the petition, and walk you through filing, hearing, and delivery in Cook County.",
+          ),
+        ),
+      ),
+    ),
+
+    React.createElement(
+      "div",
+      { className: "mt-6 flex justify-between" },
+      React.createElement(
+        "button",
+        { onClick: onRestart, "data-testid": "button-restart", className: "tap inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-ink-200 text-ink-700 hover:bg-white" },
+        "Start a new case",
+      ),
+      React.createElement(
+        "button",
+        { onClick: handleDownloadTxt, "data-testid": "button-download-2", className: "tap inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-medium card-shadow" },
+        React.createElement(Icon, { d: ICONS.download, size: 16 }), "Download my packet",
+      ),
+    ),
   );
 }
 
-function JudgeView({ judge }: { judge: JudgeResult }) {
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted">
-        Three questions a Cook County Domestic Relations judge is likely to ask. Be ready with
-        specific facts, dates, and exhibits.
-      </p>
-      {judge.qna.map((q, i) => (
-        <article key={i} className="border border-rule/40 rounded-lg p-4 bg-background space-y-2">
-          <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
-            Question {i + 1}
-          </p>
-          <p className="font-serif text-base leading-relaxed">"{q.question}"</p>
-          <p className="text-sm text-muted">
-            <span className="font-bold text-sage uppercase tracking-wider text-xs">Tip · </span>
-            {q.tip}
-          </p>
-        </article>
-      ))}
-    </div>
+// ============================================================ NARRATED NEXT STEPS PANEL
+type StepDef = { t: string; d: string; audio: string; cta: string };
+function NarratedNextSteps({ steps }: { steps: StepDef[] }) {
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const [playingIntro, setPlayingIntro] = useState(false);
+  const [introPlayed, setIntroPlayed] = useState(false);
+  const [completed, setCompleted] = useState<Record<number, boolean>>({});
+  const [working, setWorking] = useState<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const stop = () => { const a = audioRef.current; if (a) { a.pause(); a.currentTime = 0; } };
+
+  const playIntro = () => {
+    stop();
+    setActiveIdx(-1); setPlayingIntro(true);
+    const a = new Audio("/audio/intro.mp3");
+    audioRef.current = a;
+    a.onended = () => { setPlayingIntro(false); setIntroPlayed(true); };
+    a.onerror = () => { setPlayingIntro(false); };
+    a.play().catch(() => setPlayingIntro(false));
+  };
+  const playStep = (i: number) => {
+    stop();
+    setPlayingIntro(false);
+    setActiveIdx(i);
+    const a = new Audio(steps[i].audio);
+    audioRef.current = a;
+    a.onended = () => { setActiveIdx(-2); setCompleted((c) => ({ ...c, [i]: true })); };
+    a.onerror = () => { setActiveIdx(-2); };
+    a.play().catch(() => setActiveIdx(-2));
+  };
+  const pause = () => { stop(); setActiveIdx(-2); setPlayingIntro(false); };
+  useEffect(() => () => stop(), []);
+
+  return React.createElement(
+    "section",
+    { className: "bg-white border border-ink-100 rounded-2xl card-shadow p-5" },
+    React.createElement("div", { className: "text-[11px] uppercase tracking-wider text-sage-700 font-semibold" }, "Your roadmap · voice-guided"),
+    React.createElement("h3", { className: "font-display text-[20px] font-semibold text-ink-900 mt-0.5" }, "Personalized Next Steps"),
+    React.createElement("p", { className: "text-[13px] text-ink-600 mt-0.5 mb-3" }, "A calm walkthrough of the Cook County Petition for Rule to Show Cause process. Press play to hear each step, then start it with me."),
+
+    React.createElement(
+      "div",
+      { className: `mt-2 rounded-xl p-4 border ${playingIntro ? "bg-sage-50 border-sage-300" : "bg-ink-50/60 border-ink-100"}` },
+      React.createElement(
+        "div",
+        { className: "flex items-start gap-3" },
+        React.createElement(
+          "button",
+          { onClick: playingIntro ? pause : playIntro, type: "button", "data-testid": "btn-play-intro",
+            "aria-label": playingIntro ? "Pause" : "Play introduction",
+            className: `shrink-0 w-11 h-11 rounded-full inline-flex items-center justify-center transition-colors ${playingIntro ? "bg-sage-600 text-white pulse-ring" : "bg-sage-600 hover:bg-sage-700 text-white"}` },
+          React.createElement(
+            "svg",
+            { width: 16, height: 16, viewBox: "0 0 24 24", fill: "currentColor" },
+            React.createElement("path", { d: playingIntro ? "M6 5h4v14H6zM14 5h4v14h-4z" : "M8 5v14l11-7z" }),
+          ),
+        ),
+        React.createElement(
+          "div",
+          { className: "flex-1 min-w-0" },
+          React.createElement("div", { className: "font-display text-[15px] font-semibold text-ink-900" }, "Listen first — a 30-second reassurance"),
+          React.createElement(
+            "div",
+            { className: "text-[13px] text-ink-700 mt-0.5 leading-relaxed" },
+            playingIntro ? "Playing… take a breath. There is no rush." : (introPlayed ? "Played · press play again any time." : "Before the steps, hear the lay of the land in a calm voice."),
+          ),
+        ),
+      ),
+    ),
+
+    React.createElement(
+      "ol",
+      { className: "mt-4 space-y-3", "data-testid": "narrated-steps-list" },
+      steps.map((s, i) => {
+        const isPlaying = activeIdx === i;
+        const isDone = completed[i];
+        const isWorking = working === i;
+        return React.createElement(
+          "li",
+          { key: i, className: `rounded-xl border p-4 transition-colors ${isPlaying ? "bg-sage-50 border-sage-300" : isWorking ? "bg-warn-50 border-warn-100" : "bg-white border-ink-100"}` },
+          React.createElement(
+            "div",
+            { className: "flex items-start gap-3" },
+            React.createElement(
+              "span",
+              { className: `shrink-0 w-8 h-8 rounded-full inline-flex items-center justify-center text-[13px] font-semibold ${isDone ? "bg-sage-600 text-white" : "bg-sage-100 text-sage-700"}` },
+              isDone ? React.createElement(Icon, { d: ICONS.check, size: 14 }) : (i + 1),
+            ),
+            React.createElement(
+              "div",
+              { className: "flex-1 min-w-0" },
+              React.createElement("div", { className: "font-display text-[16px] font-semibold text-ink-900" }, s.t),
+              React.createElement("div", { className: "text-[13.5px] text-ink-700 mt-1 leading-relaxed" }, s.d),
+              React.createElement(
+                "div",
+                { className: "mt-3 flex flex-wrap items-center gap-2" },
+                React.createElement(
+                  "button",
+                  {
+                    onClick: isPlaying ? pause : () => playStep(i), type: "button",
+                    "data-testid": `btn-play-step-${i + 1}`,
+                    "aria-label": isPlaying ? "Pause" : `Play step ${i + 1}`,
+                    className: `tap inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium border transition-colors ${isPlaying ? "bg-sage-600 text-white border-sage-600" : "bg-white text-sage-700 border-sage-300 hover:bg-sage-50"}`,
+                  },
+                  React.createElement(
+                    "svg",
+                    { width: 14, height: 14, viewBox: "0 0 24 24", fill: "currentColor" },
+                    React.createElement("path", { d: isPlaying ? "M6 5h4v14H6zM14 5h4v14h-4z" : "M8 5v14l11-7z" }),
+                  ),
+                  isPlaying ? "Pause" : (isDone ? "Replay" : "Listen"),
+                ),
+                React.createElement(
+                  "button",
+                  {
+                    onClick: () => setWorking((w) => (w === i ? null : i)), type: "button",
+                    "data-testid": `btn-start-step-${i + 1}`,
+                    className: `tap inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium transition-colors ${isWorking ? "bg-warn-700 text-white" : "bg-ink-900 text-white hover:bg-ink-700"}`,
+                  },
+                  isWorking ? "I'll come back to this" : s.cta,
+                ),
+              ),
+              isWorking && React.createElement(
+                "div",
+                { className: "mt-3 rounded-lg bg-white border border-warn-100 p-3 text-[13px] text-ink-800 leading-relaxed" },
+                React.createElement("div", { className: "font-semibold text-warn-700 mb-1" }, "Great — we'll start here."),
+                stepGuidance(i),
+              ),
+            ),
+          ),
+        );
+      }),
+    ),
+
+    React.createElement(
+      "p",
+      { className: "mt-4 text-[12px] text-ink-600" },
+      "Voice narration is read in a calm, reassuring tone. You can pause any time. The walkthrough is not legal advice — always have a lawyer or legal-aid advocate review your packet before filing.",
+    ),
+  );
+}
+
+function stepGuidance(i: number) {
+  const guidance = [
+    "I'll open the draft packet at the top of this page. Read it slowly. As you spot anything that needs to change, type or speak it in plain language and I'll tighten the wording for you.",
+    "I'll generate a one-page exhibit checklist with examples of what each Exhibit (A, B, C, D) typically looks like.",
+    "I'll pull a current list of free Cook County legal-aid clinics that handle post-judgment enforcement.",
+    "I'll prepare your filing-day sheet: Daley Center address, which window to go to, what to bring, fee waiver info if you need one.",
+    "I'll ask you three quick questions about the other parent's address and whether they have a lawyer, then recommend the right service method.",
+    "I'll build your courtroom-day brief: what the judge will likely ask, suggested calm responses, what to bring.",
+  ];
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement("p", null, guidance[i] || "I'll guide you through this step."),
+    React.createElement("p", { className: "mt-2 text-[12px] text-ink-600 italic" }, "In this hackathon MVP this opens the next conversation — in production it would launch a guided sub-flow."),
+  );
+}
+
+// ============================================================ HELPERS
+function StepHeader({ step, total, label }: { step: number; total: number; label: string }) {
+  return React.createElement(
+    "div",
+    { className: "flex items-center gap-2 text-[12px] uppercase tracking-wider text-ink-600" },
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-1.5" },
+      ...Array.from({ length: total }, (_, i) =>
+        React.createElement("span", {
+          key: i,
+          className: `progress-dot w-2 h-2 rounded-full ${i + 1 < step ? "done" : i + 1 === step ? "active" : "bg-ink-200"}`,
+        }),
+      ),
+    ),
+    React.createElement("span", { className: "font-semibold text-sage-700" }, `Step ${step}/${total}`),
+    React.createElement("span", { className: "text-ink-600" }, "·"),
+    React.createElement("span", null, label),
+  );
+}
+function ProgressBar({ value }: { value: number }) {
+  return React.createElement(
+    "div",
+    { className: "mt-3 h-1.5 bg-ink-100 rounded-full overflow-hidden" },
+    React.createElement("div", { className: "h-full bg-sage-600 transition-all duration-500", style: { width: `${Math.max(8, value * 100)}%` } }),
+  );
+}
+function StatusDot({ ok }: { ok: boolean }) {
+  return React.createElement(
+    "span",
+    { className: `shrink-0 mt-0.5 inline-flex items-center justify-center w-5 h-5 rounded-full ${ok ? "bg-sage-600 text-white" : "bg-ink-100 text-ink-600 border border-ink-200"}` },
+    ok ? React.createElement(Icon, { d: ICONS.check, size: 12 }) : React.createElement("span", { className: "w-1.5 h-1.5 rounded-full bg-ink-300" }),
+  );
+}
+function Panel({ eyebrow, title, subtitle, children }: { eyebrow: string; title: string; subtitle?: string; children: React.ReactNode }) {
+  return React.createElement(
+    "section",
+    { className: "bg-white border border-ink-100 rounded-2xl card-shadow p-5" },
+    React.createElement("div", { className: "text-[11px] uppercase tracking-wider text-sage-700 font-semibold" }, eyebrow),
+    React.createElement("h3", { className: "font-display text-[20px] font-semibold text-ink-900 mt-0.5" }, title),
+    subtitle && React.createElement("p", { className: "text-[13px] text-ink-600 mt-0.5 mb-3" }, subtitle),
+    React.createElement("div", { className: "mt-3" }, children),
   );
 }
