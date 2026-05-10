@@ -15,6 +15,12 @@ export type Facts = {
   case_number: string | null;
   monthly_amount_owed_usd: number | null;
   notes?: string;
+  // Filled by the chat interview after vision/voice extraction:
+  petitioner_name?: string | null;
+  petitioner_address?: string | null;
+  respondent_name?: string | null;
+  respondent_address?: string | null;
+  judgment_date?: string | null;
 };
 
 export const MARIA: Facts = {
@@ -31,6 +37,11 @@ export const MARIA: Facts = {
   monthly_amount_owed_usd: 1450,
   notes:
     "Ex switched from W-2 to 1099 contractor work in 2024. Has not produced tax returns. Believes income materially increased.",
+  petitioner_name: null,
+  petitioner_address: null,
+  respondent_name: null,
+  respondent_address: null,
+  judgment_date: null,
 };
 
 export const MARIA_TRANSCRIPT = `Hi, my name is Maria, I'm in Cook County. My ex and I divorced in 2022.

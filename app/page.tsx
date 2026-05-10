@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import type { Facts } from "@/lib/demo-case";
 import type { Motion } from "@/lib/motion";
 import type { OpposingResult } from "@/lib/opposing";
 import type { JudgeResult } from "@/lib/judge";
 import { buildRoadmap, type Roadmap } from "@/lib/roadmap";
+import type { ChatMsg } from "@/lib/interview";
 
 type Stage = "idle" | "recording" | "transcribing" | "ready" | "error";
-type Tab = "roadmap" | "packet" | "opposing" | "judge";
+type Tab = "interview" | "roadmap" | "packet" | "opposing" | "judge";
 type IntakeMode = "voice" | "decree" | "demo";
 
 export default function Home() {
@@ -19,7 +20,7 @@ export default function Home() {
   const [motion, setMotion] = useState<Motion | null>(null);
   const [opposing, setOpposing] = useState<OpposingResult | null>(null);
   const [judge, setJudge] = useState<JudgeResult | null>(null);
-  const [tab, setTab] = useState<Tab>("roadmap");
+  const [tab, setTab] = useState<Tab>("interview");
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [intakeMode, setIntakeMode] = useState<IntakeMode>("demo");
 
@@ -115,6 +116,7 @@ export default function Home() {
     setTab(t);
     if (!facts) return;
     if (t === "roadmap") return; // derived client-side, no fetch
+    if (t === "interview") return; // chat manages its own fetches
     if (t === "packet" && motion) return;
     if (t === "opposing" && opposing) return;
     if (t === "judge" && judge) return;
@@ -146,7 +148,16 @@ export default function Home() {
     setMotion(null);
     setOpposing(null);
     setJudge(null);
-    setTab("roadmap");
+    setTab("interview");
+  }
+
+  // Called by the chat after each turn — updates facts and invalidates any
+  // LLM-generated downstream artifacts so they regenerate against the new facts.
+  function applyInterviewUpdate(nextFacts: Facts) {
+    setFacts(nextFacts);
+    setMotion(null);
+    setOpposing(null);
+    setJudge(null);
   }
 
   return (
@@ -184,6 +195,7 @@ export default function Home() {
               setTab={loadTab}
               loadingTab={loadingTab}
               facts={facts}
+              onFactsUpdate={applyInterviewUpdate}
               motion={motion}
               opposing={opposing}
               judge={judge}
@@ -437,6 +449,7 @@ function ResultPanel({
   setTab,
   loadingTab,
   facts,
+  onFactsUpdate,
   motion,
   opposing,
   judge,
@@ -445,6 +458,7 @@ function ResultPanel({
   setTab: (t: Tab) => void;
   loadingTab: Tab | null;
   facts: Facts;
+  onFactsUpdate: (f: Facts) => void;
   motion: Motion | null;
   opposing: OpposingResult | null;
   judge: JudgeResult | null;
@@ -453,6 +467,9 @@ function ResultPanel({
   return (
     <section className="bg-paper border border-rule/50 rounded-lg shadow-sm overflow-hidden">
       <nav className="flex border-b border-rule/30 bg-sand/40">
+        <TabButton current={tab} value="interview" onClick={() => setTab("interview")}>
+          Interview
+        </TabButton>
         <TabButton current={tab} value="roadmap" onClick={() => setTab("roadmap")}>
           Action plan
         </TabButton>
@@ -468,8 +485,16 @@ function ResultPanel({
       </nav>
 
       <div className="p-6 min-h-[420px]">
-        {tab === "roadmap" && <RoadmapView roadmap={roadmap} />}
-        {loadingTab === tab && tab !== "roadmap" && <PanelLoading label={tabLabel(tab)} />}
+        {tab === "interview" && (
+          <ChatView
+            facts={facts}
+            onFactsUpdate={onFactsUpdate}
+            completionPct={roadmap.status.completionPct}
+            onJumpToPlan={() => setTab("roadmap")}
+          />
+        )}
+        {tab === "roadmap" && <RoadmapView roadmap={roadmap} onContinueInterview={() => setTab("interview")} />}
+        {loadingTab === tab && tab !== "roadmap" && tab !== "interview" && <PanelLoading label={tabLabel(tab)} />}
         {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} /> : <Empty kind="packet" />)}
         {loadingTab !== tab && tab === "opposing" &&
           (opposing ? <OpposingView opposing={opposing} /> : <Empty kind="opposing" />)}
@@ -484,6 +509,7 @@ function tabLabel(t: Tab) {
   if (t === "packet") return "Drafting court packet";
   if (t === "opposing") return "Roleplaying opposing counsel";
   if (t === "judge") return "Generating bench questions";
+  if (t === "interview") return "Interviewing";
   return "Building action plan";
 }
 
@@ -515,6 +541,7 @@ function TabButton({
 
 function Empty({ kind }: { kind: Tab }) {
   const map: Record<Tab, string> = {
+    interview: "Conversational intake — fills the missing fields.",
     roadmap: "Personalized action plan ready.",
     packet: "Click to draft Petition for Rule to Show Cause + Rule 13.3.1 demand letter.",
     opposing: "Click to roleplay opposing counsel — 3 pushbacks + your counters.",
@@ -528,7 +555,13 @@ function Empty({ kind }: { kind: Tab }) {
   );
 }
 
-function RoadmapView({ roadmap }: { roadmap: Roadmap }) {
+function RoadmapView({
+  roadmap,
+  onContinueInterview,
+}: {
+  roadmap: Roadmap;
+  onContinueInterview: () => void;
+}) {
   const { status, nextSteps, evidence } = roadmap;
   const sections: { key: keyof typeof status; title: string; rows: typeof status.petition }[] = [
     { key: "petition", title: "Petition for Rule to Show Cause", rows: status.petition },
@@ -540,7 +573,7 @@ function RoadmapView({ roadmap }: { roadmap: Roadmap }) {
     <div className="space-y-8">
       {/* ── Section 1: Draft packet status ─────────────────────── */}
       <div>
-        <div className="flex items-baseline justify-between gap-3 mb-3">
+        <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
           <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
             Draft packet status
           </p>
@@ -549,12 +582,21 @@ function RoadmapView({ roadmap }: { roadmap: Roadmap }) {
             {sections.reduce((a, s) => a + s.rows.length, 0)} fields filled
           </span>
         </div>
-        <div className="w-full h-2 bg-sand rounded-full overflow-hidden mb-4">
+        <div className="w-full h-2 bg-sand rounded-full overflow-hidden mb-3">
           <div
             className="h-full bg-terracotta transition-all"
             style={{ width: `${status.completionPct}%` }}
           />
         </div>
+        {status.completionPct < 100 && (
+          <button
+            onClick={onContinueInterview}
+            className="w-full mb-4 rounded-lg bg-terracotta/10 hover:bg-terracotta/20 border border-terracotta/40 text-terracotta-dark px-4 py-2.5 text-sm font-medium transition-colors flex items-center justify-between"
+          >
+            <span>💬 Continue interview to fill the missing fields</span>
+            <span className="text-xs opacity-70">→</span>
+          </button>
+        )}
 
         <div className="space-y-3">
           {sections.map((sec) => (
@@ -665,6 +707,184 @@ function RoadmapView({ roadmap }: { roadmap: Roadmap }) {
       <p className="text-xs text-terracotta-dark italic pt-2 border-t border-rule/30">
         ⚠ Auto-filled, not auto-filed. Review with a licensed attorney or legal aid before
         filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
+      </p>
+    </div>
+  );
+}
+
+function ChatView({
+  facts,
+  onFactsUpdate,
+  completionPct,
+  onJumpToPlan,
+}: {
+  facts: Facts;
+  onFactsUpdate: (f: Facts) => void;
+  completionPct: number;
+  onJumpToPlan: () => void;
+}) {
+  const [history, setHistory] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [complete, setComplete] = useState(false);
+  const [openerLoading, setOpenerLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Fire the opener question on first mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setOpenerLoading(true);
+      try {
+        const res = await fetch("/api/interview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ facts, history: [], message: "" }),
+        });
+        const json = await res.json();
+        if (cancelled) return;
+        if (!res.ok) throw new Error(json.error || "interview opener failed");
+        setHistory([{ role: "assistant", content: json.reply }]);
+        if (json.facts) onFactsUpdate(json.facts);
+        setComplete(!!json.complete);
+      } catch (e) {
+        if (!cancelled) setChatError(e instanceof Error ? e.message : "opener failed");
+      } finally {
+        if (!cancelled) setOpenerLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // intentionally only on mount — opener fires once per session
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Autoscroll to bottom on new messages.
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [history, sending]);
+
+  async function send() {
+    const msg = input.trim();
+    if (!msg || sending) return;
+    setChatError(null);
+    setInput("");
+    const newHistory: ChatMsg[] = [...history, { role: "user", content: msg }];
+    setHistory(newHistory);
+    setSending(true);
+    try {
+      const res = await fetch("/api/interview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ facts, history: newHistory, message: msg }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "interview turn failed");
+      setHistory((h) => [...h, { role: "assistant", content: json.reply }]);
+      if (json.facts) onFactsUpdate(json.facts);
+      setComplete(!!json.complete);
+    } catch (e) {
+      setChatError(e instanceof Error ? e.message : "turn failed");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-[520px]">
+      <div className="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
+          Conversational intake · fill the gaps
+        </p>
+        <span className="text-xs text-muted">{completionPct}% complete</span>
+      </div>
+      <div className="w-full h-1 bg-sand rounded-full overflow-hidden mb-3">
+        <div
+          className="h-full bg-terracotta transition-all"
+          style={{ width: `${completionPct}%` }}
+        />
+      </div>
+
+      {/* Messages */}
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto bg-background border border-rule/40 rounded-lg p-4 space-y-3"
+      >
+        {openerLoading && history.length === 0 && (
+          <div className="flex items-center gap-2 text-muted text-sm">
+            <div className="w-4 h-4 rounded-full border-2 border-terracotta border-t-transparent animate-spin" />
+            JusticeLink is reading your case…
+          </div>
+        )}
+        {history.map((m, i) => (
+          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                m.role === "user"
+                  ? "bg-terracotta text-paper"
+                  : "bg-paper border border-rule/50 text-foreground"
+              }`}
+            >
+              {m.content}
+            </div>
+          </div>
+        ))}
+        {sending && (
+          <div className="flex justify-start">
+            <div className="bg-paper border border-rule/50 rounded-lg px-3 py-2 text-sm text-muted flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full border-2 border-terracotta border-t-transparent animate-spin" />
+              thinking…
+            </div>
+          </div>
+        )}
+        {chatError && (
+          <div className="text-xs text-terracotta-dark italic">⚠ {chatError}</div>
+        )}
+        {complete && (
+          <div className="bg-sage/15 border border-sage/40 rounded-lg p-3 text-sm">
+            <p className="font-medium text-sage mb-1">✓ Your packet is ready</p>
+            <p className="text-muted text-xs mb-2">
+              All required fields are filled. Review your Action Plan, then check the Court Packet,
+              Opposing Counsel, and Bench Rehearsal tabs before filing.
+            </p>
+            <button
+              onClick={onJumpToPlan}
+              className="text-xs font-medium text-sage underline"
+            >
+              Review Action Plan →
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Input */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send();
+        }}
+        className="mt-3 flex gap-2"
+      >
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          disabled={sending || openerLoading}
+          placeholder={complete ? "Anything else? (optional)" : "Type your answer…"}
+          className="flex-1 rounded-full border border-rule/60 bg-paper px-4 py-2 text-sm focus:outline-none focus:border-terracotta disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={sending || openerLoading || !input.trim()}
+          className="rounded-full bg-terracotta hover:bg-terracotta-dark disabled:opacity-40 disabled:cursor-not-allowed text-paper px-5 py-2 text-sm font-medium"
+        >
+          Send
+        </button>
+      </form>
+      <p className="text-[10px] text-muted/70 italic text-center mt-2">
+        Each answer updates your packet in real time. Switch to Action Plan anytime to see progress.
       </p>
     </div>
   );

@@ -59,14 +59,23 @@ export function buildRoadmap(facts: Facts): Roadmap {
       : null;
 
   // ───── Section 1: Draft packet status ─────
+  const petitionerCombined =
+    facts.petitioner_name && facts.petitioner_address
+      ? `${facts.petitioner_name} · ${facts.petitioner_address}`
+      : facts.petitioner_name || facts.petitioner_address || null;
+  const respondentCombined =
+    facts.respondent_name && facts.respondent_address
+      ? `${facts.respondent_name} · ${facts.respondent_address}`
+      : facts.respondent_name || facts.respondent_address || null;
+
   const petition: DraftField[] = [
     { label: "Court (county / division)", value: `${facts.county}, ${facts.jurisdiction}`, complete: facts.county !== "unknown" },
     { label: "Case number", value: facts.case_number, complete: !!facts.case_number },
     { label: "Order type", value: orderTypeLabel, complete: facts.order_type !== "unknown" },
     { label: "Monthly obligation", value: facts.monthly_amount_owed_usd ? `$${facts.monthly_amount_owed_usd}/mo` : null, complete: !!facts.monthly_amount_owed_usd },
-    { label: "Petitioner full name + address", value: null, complete: false, note: "Add in interview / sign on filing" },
-    { label: "Respondent full name + last known address", value: null, complete: false, note: "Add in interview / required for service" },
-    { label: "Date of original judgment / order", value: null, complete: false, note: "Add in interview" },
+    { label: "Petitioner full name + address", value: petitionerCombined, complete: !!(facts.petitioner_name && facts.petitioner_address), note: !!(facts.petitioner_name && facts.petitioner_address) ? undefined : "Add in interview / sign on filing" },
+    { label: "Respondent full name + last known address", value: respondentCombined, complete: !!(facts.respondent_name && facts.respondent_address), note: !!(facts.respondent_name && facts.respondent_address) ? undefined : "Add in interview / required for service" },
+    { label: "Date of original judgment / order", value: facts.judgment_date ?? null, complete: !!facts.judgment_date, note: facts.judgment_date ? undefined : "Add in interview" },
     { label: "Date of last full payment", value: facts.last_payment_date, complete: !!facts.last_payment_date, note: facts.last_payment_date ? undefined : "Pull from ILSDU history at ilsdu.com" },
     { label: "Arrears total", value: arrearsStr, complete: !!arrearsStr, note: arrearsStr ? undefined : "Compute once last payment date is confirmed" },
   ];
