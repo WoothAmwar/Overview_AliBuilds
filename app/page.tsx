@@ -7,6 +7,7 @@ import type { OpposingResult } from "@/lib/opposing";
 import type { JudgeResult } from "@/lib/judge";
 import { buildRoadmap, type Roadmap } from "@/lib/roadmap";
 import type { ChatMsg } from "@/lib/interview";
+import type { TrackDecision } from "@/lib/router";
 
 type Stage = "idle" | "recording" | "transcribing" | "ready" | "error";
 type Tab = "interview" | "roadmap" | "packet" | "opposing" | "judge";
@@ -23,6 +24,7 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("interview");
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [intakeMode, setIntakeMode] = useState<IntakeMode>("demo");
+  const [routeDecision, setRouteDecision] = useState<TrackDecision | null>(null);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
@@ -148,6 +150,7 @@ export default function Home() {
     setMotion(null);
     setOpposing(null);
     setJudge(null);
+    setRouteDecision(null);
     setTab("interview");
   }
 
@@ -159,6 +162,28 @@ export default function Home() {
     setOpposing(null);
     setJudge(null);
   }
+
+  // Fire the Featherless track-routing call once facts are available.
+  // Re-fires if order_type / issue / case_status change (the routing-relevant fields).
+  useEffect(() => {
+    if (!facts) return;
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch("/api/route", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ facts }),
+          signal: ctrl.signal,
+        });
+        const json = (await res.json()) as TrackDecision | { error: string };
+        if (!ctrl.signal.aborted && "track" in json) setRouteDecision(json);
+      } catch {
+        /* silent — track badge just won't render */
+      }
+    })();
+    return () => ctrl.abort();
+  }, [facts?.order_type, facts?.issue, facts?.case_status]);
 
   return (
     <main className="flex flex-col flex-1 min-h-screen">
@@ -196,6 +221,7 @@ export default function Home() {
               loadingTab={loadingTab}
               facts={facts}
               onFactsUpdate={applyInterviewUpdate}
+              routeDecision={routeDecision}
               motion={motion}
               opposing={opposing}
               judge={judge}
@@ -235,7 +261,7 @@ function Footer() {
       <div className="max-w-6xl mx-auto px-6 py-4 text-xs text-muted flex flex-wrap gap-x-6 gap-y-2 justify-between">
         <span>JusticeLink — auto-fill, not auto-file. Not legal advice.</span>
         <span>
-          Built with Anthropic Claude · OpenAI Whisper · Featherless AI · Flora
+          Built with Anthropic Claude · Featherless AI · Groq Whisper
         </span>
       </div>
     </footer>
@@ -450,6 +476,7 @@ function ResultPanel({
   loadingTab,
   facts,
   onFactsUpdate,
+  routeDecision,
   motion,
   opposing,
   judge,
@@ -459,6 +486,7 @@ function ResultPanel({
   loadingTab: Tab | null;
   facts: Facts;
   onFactsUpdate: (f: Facts) => void;
+  routeDecision: TrackDecision | null;
   motion: Motion | null;
   opposing: OpposingResult | null;
   judge: JudgeResult | null;
@@ -493,7 +521,13 @@ function ResultPanel({
             onJumpToPlan={() => setTab("roadmap")}
           />
         )}
-        {tab === "roadmap" && <RoadmapView roadmap={roadmap} onContinueInterview={() => setTab("interview")} />}
+        {tab === "roadmap" && (
+          <RoadmapView
+            roadmap={roadmap}
+            routeDecision={routeDecision}
+            onContinueInterview={() => setTab("interview")}
+          />
+        )}
         {loadingTab === tab && tab !== "roadmap" && tab !== "interview" && <PanelLoading label={tabLabel(tab)} />}
         {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} /> : <Empty kind="packet" />)}
         {loadingTab !== tab && tab === "opposing" &&
@@ -557,9 +591,11 @@ function Empty({ kind }: { kind: Tab }) {
 
 function RoadmapView({
   roadmap,
+  routeDecision,
   onContinueInterview,
 }: {
   roadmap: Roadmap;
+  routeDecision: TrackDecision | null;
   onContinueInterview: () => void;
 }) {
   const { status, nextSteps, evidence } = roadmap;
@@ -571,6 +607,9 @@ function RoadmapView({
 
   return (
     <div className="space-y-8">
+      {/* ── Track routing badge (Featherless sponsor integration) ───────── */}
+      {routeDecision && <TrackBadge decision={routeDecision} />}
+
       {/* ── Section 1: Draft packet status ─────────────────────── */}
       <div>
         <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
@@ -707,6 +746,46 @@ function RoadmapView({
       <p className="text-xs text-terracotta-dark italic pt-2 border-t border-rule/30">
         ⚠ Auto-filled, not auto-filed. Review with a licensed attorney or legal aid before
         filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
+      </p>
+    </div>
+  );
+}
+
+function TrackBadge({ decision }: { decision: TrackDecision }) {
+  const trackInfo: Record<TrackDecision["track"], { title: string; sub: string; tone: string }> = {
+    A: {
+      title: "Track A · Child support arrears",
+      sub: "Routed to DHFS Title IV-D enforcement (free state remedies)",
+      tone: "bg-sage/10 border-sage/40 text-sage",
+    },
+    B: {
+      title: "Track B · Hidden income / maintenance",
+      sub: "Routed to Motion to Compel + Cook County Rule 13.3.1 demand",
+      tone: "bg-terracotta/10 border-terracotta/40 text-terracotta-dark",
+    },
+    BOTH: {
+      title: "Tracks A + B · Child support arrears AND hidden income",
+      sub: "Pursue DHFS IV-D enforcement AND a Motion to Compel in parallel",
+      tone: "bg-foreground/10 border-foreground/40 text-foreground",
+    },
+  };
+  const info = trackInfo[decision.track];
+  const providerLabel =
+    decision.provider === "featherless"
+      ? "Featherless · Llama 3.3 70B"
+      : "Rule-based fallback (no Featherless key)";
+  return (
+    <div className={`border rounded-lg p-4 ${info.tone}`}>
+      <div className="flex items-baseline justify-between gap-3 flex-wrap mb-1">
+        <p className="font-bold text-sm">{info.title}</p>
+        <span className="text-[10px] uppercase tracking-wider opacity-70">
+          Routed by {providerLabel}
+          {!decision.mocked && ` · ${Math.round(decision.confidence * 100)}% confidence`}
+        </span>
+      </div>
+      <p className="text-xs opacity-80 leading-relaxed">{info.sub}</p>
+      <p className="text-xs italic opacity-70 mt-1.5 border-l-2 pl-2 border-current/30">
+        {decision.reasoning}
       </p>
     </div>
   );

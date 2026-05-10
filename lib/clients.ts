@@ -31,11 +31,26 @@ export function groq(): OpenAI | null {
   return _groq;
 }
 
+let _featherless: OpenAI | null = null;
+// Featherless AI (sponsor) — serverless inference for open-source models, OpenAI-compatible API.
+// Used for the cheap classification step (Track A vs Track B routing).
+export function featherless(): OpenAI | null {
+  if (!process.env.FEATHERLESS_API_KEY) return null;
+  if (!_featherless) {
+    _featherless = new OpenAI({
+      apiKey: process.env.FEATHERLESS_API_KEY,
+      baseURL: "https://api.featherless.ai/v1",
+    });
+  }
+  return _featherless;
+}
+
 export const MODELS = {
   haiku: "claude-haiku-4-5-20251001",
   sonnet: "claude-sonnet-4-6",
   whisperOpenAI: "whisper-1",
   whisperGroq: "whisper-large-v3",
+  llamaFeatherless: "meta-llama/Meta-Llama-3.1-70B-Instruct",
 } as const;
 
 export function extractJson<T = unknown>(text: string): T {
