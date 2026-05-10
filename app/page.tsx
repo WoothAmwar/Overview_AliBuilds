@@ -8,6 +8,7 @@ import type { JudgeResult } from "@/lib/judge";
 import { buildRoadmap, type Roadmap } from "@/lib/roadmap";
 import type { ChatMsg } from "@/lib/interview";
 import type { TrackDecision } from "@/lib/router";
+import { generatePetitionPdf, generateDemandLetterPdf, downloadBlob } from "@/lib/pdf";
 
 type Stage = "idle" | "recording" | "transcribing" | "ready" | "error";
 type Tab = "interview" | "roadmap" | "packet" | "opposing" | "judge";
@@ -282,81 +283,41 @@ function IdleHero({
   onDemo: () => void;
 }) {
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 items-center py-12">
-      <div className="space-y-5">
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
-          Step 1 · Show us your court order
-        </p>
-        <h2 className="font-serif text-4xl sm:text-5xl font-bold leading-tight">
-          When the system already has tools to help you, you shouldn't need a $400/hour lawyer to find them.
-        </h2>
-        <p className="text-lg text-muted max-w-prose">
-          Snap a photo of your divorce judgment or support order — or describe the situation in your
-          own voice. We'll extract the facts, draft the right Cook County court packet, and rehearse
-          you for what opposing counsel and the judge will say.
-        </p>
-        <div className="flex flex-wrap gap-3 pt-2">
-          <button
-            onClick={onUpload}
-            className="rounded-full bg-terracotta hover:bg-terracotta-dark text-paper px-6 py-3 font-medium shadow"
-          >
-            📎 Upload decree (PDF or photo)
-          </button>
-          <button
-            onClick={onRecord}
-            className="rounded-full border border-terracotta/50 text-terracotta hover:bg-terracotta/10 px-6 py-3 font-medium"
-          >
-            ● Voice intake
-          </button>
-          <button
-            onClick={onDemo}
-            className="rounded-full border border-rule text-muted hover:bg-paper px-6 py-3 font-medium"
-          >
-            Use demo case (Maria)
-          </button>
-        </div>
-        <p className="text-xs text-muted pt-1">
-          Accepts PDF, PNG, JPG, WEBP, GIF (≤12 MB). Claude vision reads the document. Voice intake
-          uses free Groq Whisper. No account, no upload of personal data beyond your session.
-        </p>
+    <div className="flex flex-col items-center text-center max-w-3xl mx-auto py-16 space-y-6">
+      <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
+        Cook County · access to justice
+      </p>
+      <h2 className="font-serif text-4xl sm:text-5xl font-bold leading-tight">
+        You shouldn't need $400/hour to enforce a court order.
+      </h2>
+      <p className="text-lg text-muted max-w-prose">
+        Upload your decree or speak your situation. We draft your Cook County packet and prep you for
+        opposing counsel and the judge.
+      </p>
+      <div className="flex flex-wrap justify-center gap-3 pt-2">
+        <button
+          onClick={onUpload}
+          className="rounded-full bg-terracotta hover:bg-terracotta-dark text-paper px-6 py-3 font-medium shadow"
+        >
+          📎 Upload decree (PDF or photo)
+        </button>
+        <button
+          onClick={onRecord}
+          className="rounded-full border border-terracotta/50 text-terracotta hover:bg-terracotta/10 px-6 py-3 font-medium"
+        >
+          🎤 Voice intake
+        </button>
+        <button
+          onClick={onDemo}
+          className="rounded-full border border-rule text-muted hover:bg-paper px-6 py-3 font-medium"
+        >
+          Use demo case (Maria)
+        </button>
       </div>
-
-      <aside className="bg-paper border border-rule/50 rounded-lg p-6 space-y-3 shadow-sm">
-        <p className="text-xs uppercase tracking-[0.2em] text-sage font-bold">Under the hood</p>
-        <ol className="space-y-3 text-sm">
-          <Step n={1} title="Voice → text" model="OpenAI Whisper" />
-          <Step n={2} title="Extract facts" model="Claude Haiku 4.5" />
-          <Step n={3} title="Route track" model="Featherless · Llama 3.3 70B" sponsor />
-          <Step n={4} title="Draft packet" model="Claude Sonnet 4.6" />
-          <Step n={5} title="Roleplay opposing counsel" model="Claude Sonnet 4.6" />
-          <Step n={6} title="Rehearse bench Q&A" model="Claude Sonnet 4.6" />
-        </ol>
-        <p className="text-xs text-muted pt-2 italic">
-          Six LLM calls · three providers · ~$0.04 per case vs $400/hr human counsel.
-        </p>
-      </aside>
+      <p className="text-xs text-muted pt-1 max-w-md">
+        Accepts PDF, PNG, JPG, WEBP, GIF (≤12 MB). No account. No data leaves your session.
+      </p>
     </div>
-  );
-}
-
-function Step({ n, title, model, sponsor }: { n: number; title: string; model: string; sponsor?: boolean }) {
-  return (
-    <li className="flex gap-3 items-start">
-      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-terracotta text-paper font-bold text-xs flex items-center justify-center font-serif">
-        {n}
-      </span>
-      <div className="flex-1">
-        <div className="font-semibold flex items-center gap-2">
-          {title}
-          {sponsor && (
-            <span className="text-[9px] tracking-widest font-bold bg-sage text-paper px-1.5 py-0.5 rounded">
-              SPONSOR
-            </span>
-          )}
-        </div>
-        <div className="text-xs text-muted">{model}</div>
-      </div>
-    </li>
   );
 }
 
@@ -505,10 +466,10 @@ function ResultPanel({
           Court packet
         </TabButton>
         <TabButton current={tab} value="opposing" onClick={() => setTab("opposing")}>
-          Opposing counsel
+          Practice the rebuttals
         </TabButton>
         <TabButton current={tab} value="judge" onClick={() => setTab("judge")}>
-          Bench rehearsal
+          Practice for the judge
         </TabButton>
       </nav>
 
@@ -529,7 +490,7 @@ function ResultPanel({
           />
         )}
         {loadingTab === tab && tab !== "roadmap" && tab !== "interview" && <PanelLoading label={tabLabel(tab)} />}
-        {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} /> : <Empty kind="packet" />)}
+        {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} facts={facts} /> : <Empty kind="packet" />)}
         {loadingTab !== tab && tab === "opposing" &&
           (opposing ? <OpposingView opposing={opposing} /> : <Empty kind="opposing" />)}
         {loadingTab !== tab && tab === "judge" &&
@@ -541,8 +502,8 @@ function ResultPanel({
 
 function tabLabel(t: Tab) {
   if (t === "packet") return "Drafting court packet";
-  if (t === "opposing") return "Roleplaying opposing counsel";
-  if (t === "judge") return "Generating bench questions";
+  if (t === "opposing") return "Building the rebuttal practice (opposing counsel)";
+  if (t === "judge") return "Building the bench Q&A practice";
   if (t === "interview") return "Interviewing";
   return "Building action plan";
 }
@@ -703,49 +664,134 @@ function RoadmapView({
         </ol>
       </div>
 
-      {/* ── Section 3: Evidence checklist ──────────────────────── */}
-      <div>
-        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-3">
-          Evidence checklist
-        </p>
-        <ul className="space-y-2">
-          {evidence.map((e, i) => (
+      {/* ── Section 3: Evidence checklist + per-item upload ─────── */}
+      <EvidenceChecklist evidence={evidence} />
+
+      <p className="text-xs text-terracotta-dark italic pt-2 border-t border-rule/30">
+        ⚠ Auto-filled, not auto-filed. Review with a licensed attorney or legal aid before
+        filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
+      </p>
+    </div>
+  );
+}
+
+function EvidenceChecklist({
+  evidence,
+}: {
+  evidence: { label: string; required: boolean; status: "have" | "needed" | "optional"; note?: string }[];
+}) {
+  // Map of evidence index → list of attached File objects (held in memory only).
+  const [attached, setAttached] = useState<Record<number, File[]>>({});
+  const inputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+
+  function pickFile(i: number) {
+    inputRefs.current[i]?.click();
+  }
+  function onFiles(i: number, files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setAttached((prev) => {
+      const next = { ...prev };
+      next[i] = [...(next[i] ?? []), ...Array.from(files)];
+      return next;
+    });
+  }
+  function removeFile(i: number, fname: string) {
+    setAttached((prev) => {
+      const next = { ...prev };
+      next[i] = (next[i] ?? []).filter((f) => f.name !== fname);
+      if (next[i].length === 0) delete next[i];
+      return next;
+    });
+  }
+
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-3">
+        Evidence checklist · attach as you collect
+      </p>
+      <ul className="space-y-2">
+        {evidence.map((e, i) => {
+          const files = attached[i] ?? [];
+          const hasFiles = files.length > 0;
+          // Once files are attached, treat the item as 'have' visually.
+          const effectiveStatus: typeof e.status = hasFiles ? "have" : e.status;
+          return (
             <li
               key={i}
-              className={`flex gap-2 items-start p-2 rounded border ${
-                e.status === "have"
+              className={`flex gap-2 items-start p-2.5 rounded border ${
+                effectiveStatus === "have"
                   ? "border-sage/40 bg-sage/5"
-                  : e.status === "needed"
+                  : effectiveStatus === "needed"
                     ? "border-terracotta/30 bg-terracotta/5"
                     : "border-rule/30 bg-background"
               }`}
             >
               <span
                 className={
-                  e.status === "have"
+                  effectiveStatus === "have"
                     ? "text-sage"
-                    : e.status === "needed"
+                    : effectiveStatus === "needed"
                       ? "text-terracotta-dark"
                       : "text-muted"
                 }
               >
-                {e.status === "have" ? "✓" : e.status === "needed" ? "◯" : "·"}
+                {effectiveStatus === "have" ? "✓" : effectiveStatus === "needed" ? "◯" : "·"}
               </span>
-              <div className="flex-1">
-                <div className="text-sm font-medium">
-                  {e.label}
-                  {!e.required && <span className="text-[10px] text-muted ml-2">optional</span>}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                  <div className="text-sm font-medium">
+                    {e.label}
+                    {!e.required && <span className="text-[10px] text-muted ml-2">optional</span>}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => pickFile(i)}
+                    className="text-[11px] text-terracotta hover:text-terracotta-dark font-medium whitespace-nowrap"
+                  >
+                    📎 Attach
+                  </button>
+                  <input
+                    ref={(el) => {
+                      inputRefs.current[i] = el;
+                    }}
+                    type="file"
+                    multiple
+                    accept="image/*,application/pdf,.pdf,.doc,.docx,.txt"
+                    className="hidden"
+                    onChange={(ev) => {
+                      onFiles(i, ev.target.files);
+                      ev.currentTarget.value = "";
+                    }}
+                  />
                 </div>
                 {e.note && <div className="text-xs text-muted">{e.note}</div>}
+                {hasFiles && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {files.map((f) => (
+                      <li
+                        key={f.name}
+                        className="flex items-center justify-between gap-2 text-[11px] text-sage bg-sage/10 rounded px-2 py-0.5"
+                      >
+                        <span className="truncate">📄 {f.name} · {Math.round(f.size / 1024)} KB</span>
+                        <button
+                          type="button"
+                          onClick={() => removeFile(i, f.name)}
+                          className="text-muted hover:text-terracotta-dark text-[10px]"
+                          aria-label={`Remove ${f.name}`}
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </li>
-          ))}
-        </ul>
-      </div>
-
-      <p className="text-xs text-terracotta-dark italic pt-2 border-t border-rule/30">
-        ⚠ Auto-filled, not auto-filed. Review with a licensed attorney or legal aid before
-        filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
+          );
+        })}
+      </ul>
+      <p className="text-[10px] text-muted/70 italic text-center mt-3">
+        Files stay in your browser — not uploaded to a server. Bring them with you when you file.
       </p>
     </div>
   );
@@ -810,11 +856,64 @@ function ChatView({
   const [chatError, setChatError] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [ttsOn, setTtsOn] = useState(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chatRecorderRef = useRef<MediaRecorder | null>(null);
   const chatChunksRef = useRef<BlobPart[]>([]);
   // Holds the latest send() so the recorder.onstop closure always has it.
   const sendRef = useRef<(msg: string) => Promise<void>>(async () => {});
+  // Track which message indexes have already been spoken — prevents re-speaking on re-render.
+  const spokenIdxRef = useRef<Set<number>>(new Set());
+
+  // Hydrate the TTS preference from localStorage on mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem("justicelink-tts");
+    if (saved !== null) setTtsOn(saved === "1");
+  }, []);
+
+  // Persist TTS preference + cancel any in-flight speech when toggled off.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("justicelink-tts", ttsOn ? "1" : "0");
+    if (!ttsOn && window.speechSynthesis) window.speechSynthesis.cancel();
+  }, [ttsOn]);
+
+  // Stop any ongoing speech when this component unmounts.
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  // Speak each new assistant message once.
+  useEffect(() => {
+    if (!ttsOn) return;
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const lastIdx = history.length - 1;
+    if (lastIdx < 0) return;
+    const last = history[lastIdx];
+    if (last.role !== "assistant") return;
+    if (spokenIdxRef.current.has(lastIdx)) return;
+    spokenIdxRef.current.add(lastIdx);
+
+    // Cancel anything still speaking from a prior message.
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(last.content);
+    u.rate = 1.05;
+    u.pitch = 1.0;
+    // Pick a friendly English voice if available; otherwise use the default.
+    const voices = window.speechSynthesis.getVoices();
+    const preferred =
+      voices.find((v) => v.name === "Samantha") ||
+      voices.find((v) => v.lang.startsWith("en-US") && /female|samantha|victoria|allison/i.test(v.name)) ||
+      voices.find((v) => v.lang.startsWith("en-US")) ||
+      voices.find((v) => v.lang.startsWith("en"));
+    if (preferred) u.voice = preferred;
+    window.speechSynthesis.speak(u);
+  }, [history, ttsOn]);
 
   // Fire the opener question on first mount.
   useEffect(() => {
@@ -881,6 +980,10 @@ function ChatView({
 
   async function startVoice() {
     setChatError(null);
+    // Stop any TTS still speaking — prevents the AI's voice bleeding into the mic.
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
@@ -927,7 +1030,17 @@ function ChatView({
         <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
           Conversational intake · fill the gaps
         </p>
-        <span className="text-xs text-muted">{completionPct}% complete</span>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setTtsOn((v) => !v)}
+            title={ttsOn ? "Mute the voice — text only" : "Unmute — let the assistant speak"}
+            className="text-xs text-muted hover:text-terracotta transition-colors"
+          >
+            {ttsOn ? "🔊 Voice on" : "🔇 Voice off"}
+          </button>
+          <span className="text-xs text-muted">{completionPct}% complete</span>
+        </div>
       </div>
       <div className="w-full h-1 bg-sand rounded-full overflow-hidden mb-3">
         <div
@@ -1054,9 +1167,45 @@ function PanelLoading({ label }: { label: string }) {
   );
 }
 
-function PacketView({ motion }: { motion: Motion }) {
+function PacketView({ motion, facts }: { motion: Motion; facts: Facts }) {
+  const [downloading, setDownloading] = useState<"petition" | "demand" | null>(null);
+  async function handleDownload(kind: "petition" | "demand") {
+    setDownloading(kind);
+    try {
+      const blob =
+        kind === "petition"
+          ? await generatePetitionPdf(motion, facts)
+          : await generateDemandLetterPdf(motion, facts);
+      const caseSlug = (facts.case_number ?? "case").replace(/[^A-Za-z0-9-]/g, "_");
+      const filename =
+        kind === "petition"
+          ? `Petition_for_Rule_to_Show_Cause_${caseSlug}.pdf`
+          : `Demand_Letter_13.3.1_${caseSlug}.pdf`;
+      downloadBlob(blob, filename);
+    } finally {
+      setDownloading(null);
+    }
+  }
   return (
     <div className="space-y-5">
+      {/* Download buttons — top of the packet view */}
+      <div className="flex flex-wrap gap-2 pb-3 border-b border-rule/30">
+        <button
+          onClick={() => handleDownload("petition")}
+          disabled={downloading !== null}
+          className="rounded-full bg-terracotta hover:bg-terracotta-dark disabled:opacity-50 text-paper px-4 py-2 text-xs font-medium flex items-center gap-1.5"
+        >
+          {downloading === "petition" ? "📄 Generating…" : "📥 Download Petition (PDF)"}
+        </button>
+        <button
+          onClick={() => handleDownload("demand")}
+          disabled={downloading !== null}
+          className="rounded-full border border-terracotta/50 hover:bg-terracotta/10 disabled:opacity-50 text-terracotta px-4 py-2 text-xs font-medium flex items-center gap-1.5"
+        >
+          {downloading === "demand" ? "📄 Generating…" : "📥 Download Demand Letter (PDF)"}
+        </button>
+      </div>
+
       <div>
         <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-2">
           Petition caption
