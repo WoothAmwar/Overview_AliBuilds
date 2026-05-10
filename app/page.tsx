@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import type { Facts } from "@/lib/demo-case";
 import type { Motion } from "@/lib/motion";
 import type { OpposingResult } from "@/lib/opposing";
 import type { JudgeResult } from "@/lib/judge";
+import { buildRoadmap, type Roadmap } from "@/lib/roadmap";
 
 type Stage = "idle" | "recording" | "transcribing" | "ready" | "error";
-type Tab = "packet" | "opposing" | "judge";
+type Tab = "roadmap" | "packet" | "opposing" | "judge";
 type IntakeMode = "voice" | "decree" | "demo";
 
 export default function Home() {
@@ -18,7 +19,7 @@ export default function Home() {
   const [motion, setMotion] = useState<Motion | null>(null);
   const [opposing, setOpposing] = useState<OpposingResult | null>(null);
   const [judge, setJudge] = useState<JudgeResult | null>(null);
-  const [tab, setTab] = useState<Tab>("packet");
+  const [tab, setTab] = useState<Tab>("roadmap");
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [intakeMode, setIntakeMode] = useState<IntakeMode>("demo");
 
@@ -113,6 +114,7 @@ export default function Home() {
   async function loadTab(t: Tab) {
     setTab(t);
     if (!facts) return;
+    if (t === "roadmap") return; // derived client-side, no fetch
     if (t === "packet" && motion) return;
     if (t === "opposing" && opposing) return;
     if (t === "judge" && judge) return;
@@ -144,7 +146,7 @@ export default function Home() {
     setMotion(null);
     setOpposing(null);
     setJudge(null);
-    setTab("packet");
+    setTab("roadmap");
   }
 
   return (
@@ -181,6 +183,7 @@ export default function Home() {
               tab={tab}
               setTab={loadTab}
               loadingTab={loadingTab}
+              facts={facts}
               motion={motion}
               opposing={opposing}
               judge={judge}
@@ -433,6 +436,7 @@ function ResultPanel({
   tab,
   setTab,
   loadingTab,
+  facts,
   motion,
   opposing,
   judge,
@@ -440,13 +444,18 @@ function ResultPanel({
   tab: Tab;
   setTab: (t: Tab) => void;
   loadingTab: Tab | null;
+  facts: Facts;
   motion: Motion | null;
   opposing: OpposingResult | null;
   judge: JudgeResult | null;
 }) {
+  const roadmap = useMemo(() => buildRoadmap(facts), [facts]);
   return (
     <section className="bg-paper border border-rule/50 rounded-lg shadow-sm overflow-hidden">
       <nav className="flex border-b border-rule/30 bg-sand/40">
+        <TabButton current={tab} value="roadmap" onClick={() => setTab("roadmap")}>
+          Action plan
+        </TabButton>
         <TabButton current={tab} value="packet" onClick={() => setTab("packet")}>
           Court packet
         </TabButton>
@@ -459,7 +468,8 @@ function ResultPanel({
       </nav>
 
       <div className="p-6 min-h-[420px]">
-        {loadingTab === tab && <PanelLoading label={tabLabel(tab)} />}
+        {tab === "roadmap" && <RoadmapView roadmap={roadmap} />}
+        {loadingTab === tab && tab !== "roadmap" && <PanelLoading label={tabLabel(tab)} />}
         {loadingTab !== tab && tab === "packet" && (motion ? <PacketView motion={motion} /> : <Empty kind="packet" />)}
         {loadingTab !== tab && tab === "opposing" &&
           (opposing ? <OpposingView opposing={opposing} /> : <Empty kind="opposing" />)}
@@ -471,7 +481,10 @@ function ResultPanel({
 }
 
 function tabLabel(t: Tab) {
-  return t === "packet" ? "Drafting court packet" : t === "opposing" ? "Roleplaying opposing counsel" : "Generating bench questions";
+  if (t === "packet") return "Drafting court packet";
+  if (t === "opposing") return "Roleplaying opposing counsel";
+  if (t === "judge") return "Generating bench questions";
+  return "Building action plan";
 }
 
 function TabButton({
@@ -501,7 +514,8 @@ function TabButton({
 }
 
 function Empty({ kind }: { kind: Tab }) {
-  const map = {
+  const map: Record<Tab, string> = {
+    roadmap: "Personalized action plan ready.",
     packet: "Click to draft Petition for Rule to Show Cause + Rule 13.3.1 demand letter.",
     opposing: "Click to roleplay opposing counsel — 3 pushbacks + your counters.",
     judge: "Click to rehearse the 3 questions a Cook County judge will ask from the bench.",
@@ -510,6 +524,148 @@ function Empty({ kind }: { kind: Tab }) {
     <div className="flex flex-col items-center justify-center h-[380px] text-center gap-4 text-muted">
       <p className="text-sm max-w-md">{map[kind]}</p>
       <p className="text-xs">Tab content loads on first click.</p>
+    </div>
+  );
+}
+
+function RoadmapView({ roadmap }: { roadmap: Roadmap }) {
+  const { status, nextSteps, evidence } = roadmap;
+  const sections: { key: keyof typeof status; title: string; rows: typeof status.petition }[] = [
+    { key: "petition", title: "Petition for Rule to Show Cause", rows: status.petition },
+    { key: "notice", title: "Notice of Court Date", rows: status.notice },
+    { key: "proof", title: "Proof of Delivery", rows: status.proof },
+  ];
+
+  return (
+    <div className="space-y-8">
+      {/* ── Section 1: Draft packet status ─────────────────────── */}
+      <div>
+        <div className="flex items-baseline justify-between gap-3 mb-3">
+          <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold">
+            Draft packet status
+          </p>
+          <span className="text-xs text-muted">
+            {status.completionPct}% complete · {sections.reduce((a, s) => a + s.rows.filter((r) => r.complete).length, 0)} of{" "}
+            {sections.reduce((a, s) => a + s.rows.length, 0)} fields filled
+          </span>
+        </div>
+        <div className="w-full h-2 bg-sand rounded-full overflow-hidden mb-4">
+          <div
+            className="h-full bg-terracotta transition-all"
+            style={{ width: `${status.completionPct}%` }}
+          />
+        </div>
+
+        <div className="space-y-3">
+          {sections.map((sec) => (
+            <details key={sec.key} className="bg-background border border-rule/40 rounded" open={sec.key === "petition"}>
+              <summary className="cursor-pointer px-3 py-2 text-sm font-medium flex justify-between items-center">
+                <span>{sec.title}</span>
+                <span className="text-xs text-muted">
+                  {sec.rows.filter((r) => r.complete).length}/{sec.rows.length}
+                </span>
+              </summary>
+              <div className="px-3 pb-3">
+                <ul className="text-xs space-y-1.5">
+                  {sec.rows.map((r, i) => (
+                    <li key={i} className="flex gap-2 items-start">
+                      <span className={r.complete ? "text-sage" : "text-terracotta-dark"}>
+                        {r.complete ? "✓" : "◯"}
+                      </span>
+                      <div className="flex-1">
+                        <span className="font-medium">{r.label}</span>
+                        {r.value && <span className="text-muted"> · {r.value}</span>}
+                        {r.note && <div className="text-muted italic text-[11px]">{r.note}</div>}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </details>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Section 2: Personalized next steps ─────────────────── */}
+      <div>
+        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-3">
+          Your next steps · personalized roadmap
+        </p>
+        <ol className="space-y-3">
+          {nextSteps.map((s) => (
+            <li key={s.n} className="flex gap-3 items-start">
+              <span
+                className={`flex-shrink-0 w-7 h-7 rounded-full text-paper font-bold text-xs flex items-center justify-center font-serif ${
+                  s.state === "ready"
+                    ? "bg-terracotta"
+                    : s.state === "after_filing"
+                      ? "bg-sage"
+                      : "bg-muted"
+                }`}
+              >
+                {s.n}
+              </span>
+              <div className="flex-1">
+                <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                  <span className="font-medium text-sm">{s.title}</span>
+                  <span className="text-[10px] uppercase tracking-wider text-muted">
+                    {s.state === "ready" ? "do now" : s.state === "after_filing" ? "after filing" : "after hearing"}
+                  </span>
+                </div>
+                <p className="text-sm text-muted leading-relaxed">{s.body}</p>
+                {s.detail && (
+                  <p className="text-xs text-muted/80 italic mt-1 border-l-2 border-rule/40 pl-2">{s.detail}</p>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      {/* ── Section 3: Evidence checklist ──────────────────────── */}
+      <div>
+        <p className="text-xs uppercase tracking-[0.2em] text-terracotta font-bold mb-3">
+          Evidence checklist
+        </p>
+        <ul className="space-y-2">
+          {evidence.map((e, i) => (
+            <li
+              key={i}
+              className={`flex gap-2 items-start p-2 rounded border ${
+                e.status === "have"
+                  ? "border-sage/40 bg-sage/5"
+                  : e.status === "needed"
+                    ? "border-terracotta/30 bg-terracotta/5"
+                    : "border-rule/30 bg-background"
+              }`}
+            >
+              <span
+                className={
+                  e.status === "have"
+                    ? "text-sage"
+                    : e.status === "needed"
+                      ? "text-terracotta-dark"
+                      : "text-muted"
+                }
+              >
+                {e.status === "have" ? "✓" : e.status === "needed" ? "◯" : "·"}
+              </span>
+              <div className="flex-1">
+                <div className="text-sm font-medium">
+                  {e.label}
+                  {!e.required && <span className="text-[10px] text-muted ml-2">optional</span>}
+                </div>
+                {e.note && <div className="text-xs text-muted">{e.note}</div>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <p className="text-xs text-terracotta-dark italic pt-2 border-t border-rule/30">
+        ⚠ Auto-filled, not auto-filed. Review with a licensed attorney or legal aid before
+        filing. CARPLS · Legal Aid Chicago · Cook County SRLC.
+      </p>
     </div>
   );
 }
