@@ -729,7 +729,13 @@ function ChatView({
   const [complete, setComplete] = useState(false);
   const [openerLoading, setOpenerLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const chatRecorderRef = useRef<MediaRecorder | null>(null);
+  const chatChunksRef = useRef<BlobPart[]>([]);
+  // Holds the latest send() so the recorder.onstop closure always has it.
+  const sendRef = useRef<(msg: string) => Promise<void>>(async () => {});
 
   // Fire the opener question on first mount.
   useEffect(() => {
@@ -766,11 +772,11 @@ function ChatView({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [history, sending]);
 
-  async function send() {
-    const msg = input.trim();
+  async function send(messageOverride?: string) {
+    const msg = (messageOverride ?? input).trim();
     if (!msg || sending) return;
     setChatError(null);
-    setInput("");
+    if (!messageOverride) setInput("");
     const newHistory: ChatMsg[] = [...history, { role: "user", content: msg }];
     setHistory(newHistory);
     setSending(true);
@@ -790,6 +796,50 @@ function ChatView({
     } finally {
       setSending(false);
     }
+  }
+  // Keep the ref in sync so MediaRecorder's onstop closure can call the latest send.
+  sendRef.current = send;
+
+  async function startVoice() {
+    setChatError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      chatChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chatChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        setTranscribing(true);
+        try {
+          const blob = new Blob(chatChunksRef.current, { type: mimeType || "audio/webm" });
+          const fd = new FormData();
+          fd.append("audio", new File([blob], "chat.webm", { type: blob.type }));
+          const res = await fetch("/api/transcribe", { method: "POST", body: fd });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || "transcribe failed");
+          const text = (json.transcript as string)?.trim();
+          if (text) await sendRef.current(text);
+          else setChatError("Heard silence — try again.");
+        } catch (e) {
+          setChatError(e instanceof Error ? e.message : "transcribe failed");
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      recorder.start();
+      chatRecorderRef.current = recorder;
+      setRecording(true);
+    } catch (e) {
+      setChatError(e instanceof Error ? e.message : "mic permission denied");
+    }
+  }
+
+  function stopVoice() {
+    chatRecorderRef.current?.stop();
   }
 
   return (
@@ -859,32 +909,58 @@ function ChatView({
         )}
       </div>
 
-      {/* Input */}
+      {/* Input — voice-first, type as fallback */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
           send();
         }}
-        className="mt-3 flex gap-2"
+        className="mt-3 flex gap-2 items-center"
       >
+        {/* Mic button — primary CTA */}
+        <button
+          type="button"
+          onClick={recording ? stopVoice : startVoice}
+          disabled={sending || openerLoading || transcribing}
+          aria-label={recording ? "Stop recording and send" : "Record voice answer"}
+          title={recording ? "Stop and send" : "Tap to speak your answer"}
+          className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center text-lg shadow transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+            recording
+              ? "bg-foreground text-paper animate-pulse"
+              : "bg-terracotta hover:bg-terracotta-dark text-paper"
+          }`}
+        >
+          {recording ? "■" : transcribing ? (
+            <span className="w-4 h-4 rounded-full border-2 border-paper border-t-transparent animate-spin" />
+          ) : "🎤"}
+        </button>
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          disabled={sending || openerLoading}
-          placeholder={complete ? "Anything else? (optional)" : "Type your answer…"}
-          className="flex-1 rounded-full border border-rule/60 bg-paper px-4 py-2 text-sm focus:outline-none focus:border-terracotta disabled:opacity-50"
+          disabled={sending || openerLoading || recording || transcribing}
+          placeholder={
+            recording
+              ? "Recording… tap ■ to stop & send"
+              : transcribing
+                ? "Transcribing your answer…"
+                : complete
+                  ? "Anything else? (or just speak)"
+                  : "Tap 🎤 to speak — or type here"
+          }
+          className="flex-1 rounded-full border border-rule/60 bg-paper px-4 py-2.5 text-sm focus:outline-none focus:border-terracotta disabled:opacity-50"
         />
         <button
           type="submit"
-          disabled={sending || openerLoading || !input.trim()}
-          className="rounded-full bg-terracotta hover:bg-terracotta-dark disabled:opacity-40 disabled:cursor-not-allowed text-paper px-5 py-2 text-sm font-medium"
+          disabled={sending || openerLoading || recording || transcribing || !input.trim()}
+          className="rounded-full border border-terracotta/50 text-terracotta hover:bg-terracotta/10 disabled:opacity-30 disabled:cursor-not-allowed px-4 py-2 text-sm font-medium"
         >
           Send
         </button>
       </form>
       <p className="text-[10px] text-muted/70 italic text-center mt-2">
-        Each answer updates your packet in real time. Switch to Action Plan anytime to see progress.
+        Voice-first · Groq Whisper transcribes free. Your answer auto-sends after recording.
+        Switch to Action Plan anytime to see progress.
       </p>
     </div>
   );
