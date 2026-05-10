@@ -73,7 +73,7 @@ export async function interviewTurn(
   ];
 
   const msg = await client.messages.create({
-    model: MODELS.sonnet,
+    model: MODELS.haiku,
     max_tokens: 1024,
     system: INTERVIEW_SYSTEM,
     messages,
@@ -102,7 +102,7 @@ export async function interviewOpener(facts: Facts): Promise<InterviewTurn> {
     };
   }
   const msg = await client.messages.create({
-    model: MODELS.sonnet,
+    model: MODELS.haiku,
     max_tokens: 512,
     system: INTERVIEW_SYSTEM,
     messages: [

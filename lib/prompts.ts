@@ -18,6 +18,11 @@ Return ONLY a JSON object matching this exact shape (no prose, no markdown fence
   "ex_employed": true | false | "unknown",
   "case_number": "<string>" | null,
   "monthly_amount_owed_usd": <number> | null,
+  "petitioner_name": "<speaker's full legal name if mentioned>" | null,
+  "petitioner_address": "<speaker's full address if mentioned>" | null,
+  "respondent_name": "<ex's full legal name if mentioned>" | null,
+  "respondent_address": "<ex's last-known address if mentioned>" | null,
+  "judgment_date": "YYYY-MM-DD" | null,
   "notes": "<one-sentence summary of any other useful detail>"
 }`;
 

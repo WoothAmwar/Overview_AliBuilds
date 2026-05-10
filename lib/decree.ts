@@ -3,7 +3,7 @@
 import { anthropic, MODELS, extractJson } from "./clients";
 import { MARIA, type Facts } from "./demo-case";
 
-const DECREE_VISION_SYSTEM = `You read a photo of a divorce judgment, child-support order, maintenance order, or related Cook County / Illinois court document and extract structured legal-aid intake data for a self-represented person.
+const DECREE_VISION_SYSTEM = `You read a photo or PDF of a divorce judgment, child-support order, maintenance order, or related Cook County / Illinois court document and extract structured legal-aid intake data for a self-represented person.
 
 Return ONLY a JSON object matching this exact shape (no prose, no markdown fences):
 
@@ -19,15 +19,23 @@ Return ONLY a JSON object matching this exact shape (no prose, no markdown fence
   "ex_employed": true | false | "unknown",
   "case_number": "<string>" | null,
   "monthly_amount_owed_usd": <number> | null,
+  "petitioner_name": "<full legal name as printed>" | null,
+  "petitioner_address": "<full mailing address as printed: street, city, state, ZIP>" | null,
+  "respondent_name": "<full legal name as printed>" | null,
+  "respondent_address": "<full mailing address as printed: street, city, state, ZIP>" | null,
+  "judgment_date": "YYYY-MM-DD" | null,
   "notes": "<one-sentence summary of judgment date, parties, and what was ordered>"
 }
 
 Rules:
-- If a field cannot be determined from the document alone, use null. The user will fill gaps in a follow-up interview.
+- If a field cannot be determined from the document, use null. The user will fill gaps in a follow-up interview.
 - Default 'issue' to "non_payment" unless the document explicitly indicates something else.
 - Default 'party_role' to "payee" unless the document makes the user's role obvious.
-- For 'monthly_amount_owed_usd', extract the dollar amount the order requires (the periodic obligation), not arrears.
-- The 'notes' field is the place to put judgment date, party names, and ordered amount + frequency in plain English.`;
+- For 'monthly_amount_owed_usd', extract the dollar amount the order requires (the periodic obligation), NOT arrears.
+- For 'petitioner_name' / 'respondent_name', use the exact names from the case caption (e.g. "MARIA LOPEZ", "CARLOS LOPEZ"). Capitalize as printed.
+- For addresses, use the FULL printed address. If only the petitioner's address is shown, leave 'respondent_address' null.
+- For 'judgment_date', use the date the judgment or order was entered (filed/signed by the judge), in YYYY-MM-DD form.
+- The 'notes' field is for any extra detail (judge name, ILSDU disbursement, withholding orders, etc.) in plain English.`;
 
 export type DecreeMediaType =
   | "image/png"
@@ -58,7 +66,7 @@ export async function extractFromDecree(
         };
 
   const msg = await client.messages.create({
-    model: MODELS.sonnet,
+    model: MODELS.haiku, // vision-capable + ~5x cheaper than Sonnet
     max_tokens: 1024,
     system: DECREE_VISION_SYSTEM,
     messages: [
