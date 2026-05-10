@@ -157,7 +157,7 @@ export default function Home() {
         <input
           ref={decreeInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif"
+          accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf,.png,.jpg,.jpeg,.webp,.gif"
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -262,7 +262,7 @@ function IdleHero({
             onClick={onUpload}
             className="rounded-full bg-terracotta hover:bg-terracotta-dark text-paper px-6 py-3 font-medium shadow"
           >
-            📎 Upload decree photo
+            📎 Upload decree (PDF or photo)
           </button>
           <button
             onClick={onRecord}
@@ -278,8 +278,8 @@ function IdleHero({
           </button>
         </div>
         <p className="text-xs text-muted pt-1">
-          Photo upload uses Claude vision to read your order. Voice intake uses Groq Whisper. No
-          account, no upload of personal data beyond your session.
+          Accepts PDF, PNG, JPG, WEBP, GIF (≤12 MB). Claude vision reads the document. Voice intake
+          uses free Groq Whisper. No account, no upload of personal data beyond your session.
         </p>
       </div>
 

@@ -29,14 +29,34 @@ Rules:
 - For 'monthly_amount_owed_usd', extract the dollar amount the order requires (the periodic obligation), not arrears.
 - The 'notes' field is the place to put judgment date, party names, and ordered amount + frequency in plain English.`;
 
+export type DecreeMediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/webp"
+  | "image/gif"
+  | "application/pdf";
+
 export async function extractFromDecree(
-  imageBase64: string,
-  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif",
+  base64: string,
+  mediaType: DecreeMediaType,
 ): Promise<{ facts: Facts; mocked: boolean }> {
   const client = anthropic();
   if (!client) {
     return { facts: MARIA, mocked: true };
   }
+
+  // Claude vision uses different content block types for PDFs vs images.
+  const sourceBlock =
+    mediaType === "application/pdf"
+      ? {
+          type: "document" as const,
+          source: { type: "base64" as const, media_type: "application/pdf" as const, data: base64 },
+        }
+      : {
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: mediaType, data: base64 },
+        };
+
   const msg = await client.messages.create({
     model: MODELS.sonnet,
     max_tokens: 1024,
@@ -45,10 +65,7 @@ export async function extractFromDecree(
       {
         role: "user",
         content: [
-          {
-            type: "image",
-            source: { type: "base64", media_type: mediaType, data: imageBase64 },
-          },
+          sourceBlock,
           { type: "text", text: "Extract the case facts from this document." },
         ],
       },
